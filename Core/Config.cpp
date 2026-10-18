@@ -744,6 +744,14 @@ static const ConfigSetting graphicsSettings[] = {
 	ConfigSetting("AnisotropyLevel", SETTING(g_Config, iAnisotropyLevel), 4, CfgFlag::PER_GAME),
 	ConfigSetting("MultiSampleLevel", SETTING(g_Config, iMultiSampleLevel), 0, CfgFlag::PER_GAME),  // Number of samples is 1 << iMultiSampleLevel
 
+	ConfigSetting("PlanarShadows", SETTING(g_Config, bPlanarShadows), false, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowQuality", SETTING(g_Config, iPlanarShadowQuality), 1, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDistance", SETTING(g_Config, iPlanarShadowDistance), 2, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowOpacity", SETTING(g_Config, iPlanarShadowOpacity), 25, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDirX", SETTING(g_Config, iPlanarShadowDirX), 45, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDirZ", SETTING(g_Config, iPlanarShadowDirZ), 30, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowHideOriginal", SETTING(g_Config, bPlanarShadowHideOriginal), true, CfgFlag::PER_GAME),
+
 	ConfigSetting("VertexDecJit", SETTING(g_Config, bVertexDecoderJit), &DefaultCodeGen, CfgFlag::DONT_SAVE | CfgFlag::REPORT),
 
 #ifndef MOBILE_DEVICE
@@ -1600,6 +1608,12 @@ void Config::PostLoadCleanup() {
 
 	// This caps the aniso level exponent to 4 (so 16x.). No hardware supports more anyway.
 	iAnisotropyLevel = std::clamp(iAnisotropyLevel, 0, 4);
+
+	iPlanarShadowQuality = std::clamp(iPlanarShadowQuality, 0, 2);
+	iPlanarShadowDistance = std::clamp(iPlanarShadowDistance, 0, 3);
+	iPlanarShadowOpacity = std::clamp(iPlanarShadowOpacity, 0, 60);
+	iPlanarShadowDirX = std::clamp(iPlanarShadowDirX, -200, 200);
+	iPlanarShadowDirZ = std::clamp(iPlanarShadowDirZ, -200, 200);
 
 	if (iGPUBackend == 1) {  // d3d9, no longer supported. Fall back to D3D11.
 		iGPUBackend = (int)GPUBackend::DIRECT3D11;

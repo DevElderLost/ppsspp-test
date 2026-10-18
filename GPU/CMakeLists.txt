@@ -98,6 +98,8 @@ set(GPU_SOURCES
 	Common/GPUStateUtils.h
 	Common/DrawEngineCommon.cpp
 	Common/DrawEngineCommon.h
+	Common/PlanarShadows.cpp
+	Common/PlanarShadows.h
 	Common/PresentationCommon.cpp
 	Common/PresentationCommon.h
 	Common/ReinterpretFramebuffer.cpp

@@ -574,6 +574,25 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *smartFiltering = graphicsSettings->Add(new CheckBox(&g_Config.bSmart2DTexFiltering, gr->T("Smart 2D texture filtering")));
 	smartFiltering->SetDisabledPtr(&g_Config.bSoftwareRendering);
 
+	graphicsSettings->Add(new ItemHeader(gr->T("Shadows")));
+	CheckBox *planarShadows = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadows, gr->T("Planar shadows")));
+	planarShadows->SetDisabledPtr(&g_Config.bSoftwareRendering);
+	graphicsSettings->Add(new SettingHint(gr->T("Planar shadows Tip", "Experimental: adds animated silhouette shadows under skinned characters and monsters, drawn on the GPU"), planarShadows));
+	static const char *shadowQualityLevels[] = { "Low (64)", "Medium (96)", "High (192)" };
+	PopupMultiChoice *shadowQuality = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowQuality, gr->T("Shadow quality"), shadowQualityLevels, 0, ARRAY_SIZE(shadowQualityLevels), I18NCat::GRAPHICS, screenManager()));
+	shadowQuality->SetEnabledPtr(&g_Config.bPlanarShadows);
+	static const char *shadowDistances[] = { "No limit", "Short", "Medium", "Long" };
+	PopupMultiChoice *shadowDistance = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowDistance, gr->T("Shadow distance"), shadowDistances, 0, ARRAY_SIZE(shadowDistances), I18NCat::GRAPHICS, screenManager()));
+	shadowDistance->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowOpacity = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowOpacity, 0, 60, 25, gr->T("Shadow opacity"), 5, screenManager(), "%"));
+	shadowOpacity->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirX = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirX, -200, 200, 45, gr->T("Shadow direction X"), 5, screenManager()));
+	shadowDirX->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirZ = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirZ, -200, 200, 30, gr->T("Shadow direction Z"), 5, screenManager()));
+	shadowDirZ->SetEnabledPtr(&g_Config.bPlanarShadows);
+	CheckBox *shadowHide = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadowHideOriginal, gr->T("Hide original blob shadows")));
+	shadowHide->SetEnabledPtr(&g_Config.bPlanarShadows);
+
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else

@@ -347,6 +347,15 @@ public:
 	bool bAllowFullScreenExclusive;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
+
+	// Planar silhouette shadows (see GPU/Common/PlanarShadows.h).
+	bool bPlanarShadows;
+	int iPlanarShadowQuality;   // 0 = Low (64), 1 = Medium (96), 2 = High (192)
+	int iPlanarShadowDistance;  // 0 = No limit, 1 = Short, 2 = Medium, 3 = Long
+	int iPlanarShadowOpacity;   // Percent, 0 - 60
+	int iPlanarShadowDirX;      // Hundredths of a world unit per unit of height, -200 - 200
+	int iPlanarShadowDirZ;      // Same, for the Z axis.
+	bool bPlanarShadowHideOriginal;  // Skip the game's own round blob shadows (Monster Hunter Portable 3rd signature).
 	int iMultiSampleLevel;
 	int bHighQualityDepth;
 	bool bReplaceTextures;
