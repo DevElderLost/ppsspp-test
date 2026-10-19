@@ -5,13 +5,13 @@
 // PresentationCommon can build them like any other post shader. This file does not depend on thin3d, only on the
 // target language, which keeps it testable on its own.
 //
-// What a pass may use: up to three textures at once (PPSSPP's post shader pipelines have three texture slots): the
+// What a pass may use: up to eight textures at once (kReshadeMaxTextures, the texture slots of the post shader pipelines): the
 // back buffer (ReShade::BackBuffer), the game's depth buffer (ReShade::DepthBuffer), textures loaded from files
 // (`source = "lut.png"`) and the ReShade textures other passes render into. Render-target textures can be RGBA8 or
 // RGBA16F (every float format becomes RGBA16F) and have mipmaps. Uniforms with a `source` annotation (frametime,
 // framecount, timer, pingpong, random, date) are updated per frame, all others run on their declared defaults
 // (reshadefx turns them into specialization constants). Rejected with an error message: passes with more than one
-// render target, more than three textures, and storage images.
+// render target, more than eight textures, and storage images.
 
 #pragma once
 
@@ -19,10 +19,12 @@
 #include <string>
 #include <vector>
 
+constexpr int kReshadeMaxTextures = 8;  // must not exceed Draw::MAX_TEXTURE_SLOTS
+
 enum class ReshadeTarget {
-	GLSL_ES3,      // OpenGL ES 3.x, uniforms as plain uniforms, samplers named sampler0..2.
+	GLSL_ES3,      // OpenGL ES 3.x, uniforms as plain uniforms, samplers named sampler0..7.
 	GLSL_DESKTOP,  // Desktop OpenGL 3.3+, same conventions.
-	VULKAN,        // Vulkan GLSL 450, uniform block at set 0 binding 0, samplers at set 0 bindings 1..3.
+	VULKAN,        // Vulkan GLSL 450, uniform block at set 0 binding 0, samplers at set 0 bindings 1..8.
 };
 
 enum class ReshadeFormat {
@@ -79,9 +81,15 @@ struct ReshadeUniform {
 struct ReshadePass {
 	std::string vs;
 	std::string fs;
-	ReshadeSlot slotKind[3] = { ReshadeSlot::NONE, ReshadeSlot::NONE, ReshadeSlot::NONE };
-	int slotIndex[3] = { -1, -1, -1 };
-	ReshadeSampler slotSampler[3];
+	ReshadeSlot slotKind[kReshadeMaxTextures];
+	int slotIndex[kReshadeMaxTextures];
+	ReshadeSampler slotSampler[kReshadeMaxTextures];
+	ReshadePass() {
+		for (int i = 0; i < kReshadeMaxTextures; i++) {
+			slotKind[i] = ReshadeSlot::NONE;
+			slotIndex[i] = -1;
+		}
+	}
 	int renderTarget = -1;  // index into ReshadeProgram::textures, -1 = writes the (next) back buffer
 	bool clear = false;     // ClearRenderTargets
 };

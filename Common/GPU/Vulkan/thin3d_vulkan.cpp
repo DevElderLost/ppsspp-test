@@ -553,7 +553,7 @@ public:
 		}
 	}
 
-	void BindDescriptors(VkBuffer buffer, PackedDescriptor descriptors[4]);
+	void BindDescriptors(VkBuffer buffer, PackedDescriptor descriptors[MAX_BOUND_TEXTURES + 1]);
 
 	std::vector<std::string> GetFeatureList() const override;
 	std::vector<std::string> GetExtensionList(bool device, bool enabledOnly) const override;
@@ -1237,7 +1237,7 @@ void VKContext::Invalidate(InvalidationFlags flags) {
 	}
 }
 
-void VKContext::BindDescriptors(VkBuffer buf, PackedDescriptor descriptors[4]) {
+void VKContext::BindDescriptors(VkBuffer buf, PackedDescriptor descriptors[MAX_BOUND_TEXTURES + 1]) {
 	descriptors[0].buffer.buffer = buf;
 	descriptors[0].buffer.offset = 0;  // dynamic
 	descriptors[0].buffer.range = curPipeline_->GetUBOSize();
@@ -1586,7 +1586,7 @@ void VKContext::Draw(int vertexCount, int offset) {
 	BindCurrentPipeline();
 	ApplyDynamicState();
 	int descSetIndex;
-	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(4, &descSetIndex);
+	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(MAX_BOUND_TEXTURES + 1, &descSetIndex);
 	BindDescriptors(vulkanUBObuf, descriptors);
 	renderManager_.Draw(descSetIndex, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset + curVBufferOffset_, vertexCount, offset);
 }
@@ -1603,7 +1603,7 @@ void VKContext::DrawIndexed(int vertexCount, int offset) {
 	BindCurrentPipeline();
 	ApplyDynamicState();
 	int descSetIndex;
-	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(4, &descSetIndex);
+	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(MAX_BOUND_TEXTURES + 1, &descSetIndex);
 	BindDescriptors(vulkanUBObuf, descriptors);
 	renderManager_.DrawIndexed(descSetIndex, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset + curVBufferOffset_, vulkanIbuf, (int)ibBindOffset + offset * sizeof(uint32_t), vertexCount, 1);
 }
@@ -1626,7 +1626,7 @@ void VKContext::DrawUP(const void *vdata, int vertexCount) {
 	BindCurrentPipeline();
 	ApplyDynamicState();
 	int descSetIndex;
-	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(4, &descSetIndex);
+	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(MAX_BOUND_TEXTURES + 1, &descSetIndex);
 	BindDescriptors(vulkanUBObuf, descriptors);
 	renderManager_.Draw(descSetIndex, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vertexCount);
 }
@@ -1656,7 +1656,7 @@ void VKContext::DrawIndexedUP(const void *vdata, int vertexCount, const void *id
 	BindCurrentPipeline();
 	ApplyDynamicState();
 	int descSetIndex;
-	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(4, &descSetIndex);
+	PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(MAX_BOUND_TEXTURES + 1, &descSetIndex);
 	BindDescriptors(vulkanUBObuf, descriptors);
 	renderManager_.DrawIndexed(descSetIndex, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vulkanIbuf, (int)ibBindOffset, indexCount, 1);
 }
@@ -1710,7 +1710,7 @@ void VKContext::DrawIndexedClippedBatchUP(const void *vdata, int vertexCount, co
 		Draw::SamplerState *sstate = draw.samplerState;
 		BindSamplerStates(0, 1, &sstate);
 		int descSetIndex;
-		PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(4, &descSetIndex);
+		PackedDescriptor *descriptors = renderManager_.PushDescriptorSet(MAX_BOUND_TEXTURES + 1, &descSetIndex);
 		BindDescriptors(vulkanUBObuf, descriptors);
 		renderManager_.SetScissor(draw.clipx, draw.clipy, draw.clipw, draw.cliph);
 		renderManager_.DrawIndexed(descSetIndex, 1, &ubo_offset, vulkanVbuf, (int)vbBindOffset, vulkanIbuf,

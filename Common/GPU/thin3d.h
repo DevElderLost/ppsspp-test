@@ -296,7 +296,7 @@ enum class ReadbackMode {
 	OLD_DATA_OK,  // Lets the backend return old results that won't need any waiting to get.
 };
 
-constexpr uint32_t MAX_TEXTURE_SLOTS = 3;
+constexpr uint32_t MAX_TEXTURE_SLOTS = 8;
 
 struct FramebufferDesc {
 	int width;
@@ -832,7 +832,7 @@ public:
 	// If an fbo has two layers, we bind for stereo rendering ALWAYS. There's no rendering to one layer anymore.
 	virtual void BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp, const char *tag) = 0;
 
-	// binding must be < MAX_TEXTURE_SLOTS (0, 1 are okay if it's 2).
+	// binding must be < MAX_TEXTURE_SLOTS.
 	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspect aspect, int layer) = 0;
 	// Binds a multisampled framebuffer's color samples, for texelFetch from a sampler with SamplerFlags::MULTISAMPLE.
 	// Check framebufferSampleReadSupported.

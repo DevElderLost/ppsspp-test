@@ -1334,10 +1334,12 @@ bool OpenGLPipeline::LinkShaders(const PipelineDesc &desc) {
 		}
 		samplersToCheck = size;
 	} else {
-		queries.push_back({ &locs_->samplerLocs_[0], "sampler0" });
-		queries.push_back({ &locs_->samplerLocs_[1], "sampler1" });
-		queries.push_back({ &locs_->samplerLocs_[2], "sampler2" });
-		samplersToCheck = 3;
+		static const char *const defaultSamplerNames[] = { "sampler0", "sampler1", "sampler2", "sampler3", "sampler4", "sampler5", "sampler6", "sampler7" };
+		static_assert(ARRAY_SIZE(defaultSamplerNames) >= MAX_TEXTURE_SLOTS, "add sampler names");
+		for (int i = 0; i < (int)MAX_TEXTURE_SLOTS; i++) {
+			queries.push_back({ &locs_->samplerLocs_[i], defaultSamplerNames[i], false });
+		}
+		samplersToCheck = MAX_TEXTURE_SLOTS;
 	}
 
 	_assert_(queries.size() <= MAX_TEXTURE_SLOTS);

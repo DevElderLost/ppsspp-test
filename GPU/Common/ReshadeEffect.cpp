@@ -355,8 +355,8 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 						slot = sl->second;
 					} else {
 						slot = slots++;
-						if (slot > 2) {
-							out->error = "pass " + pi->ps_entry_point + " needs more than three textures at once (PPSSPP has three texture slots)";
+						if (slot >= kReshadeMaxTextures) {
+							out->error = "pass " + pi->ps_entry_point + " needs more than " + std::to_string(kReshadeMaxTextures) + " textures at once (PPSSPP has " + std::to_string(kReshadeMaxTextures) + " texture slots)";
 							return false;
 						}
 						slotOf[key] = slot;

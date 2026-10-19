@@ -201,7 +201,7 @@ struct VKRPipelineLayout {
 	VKRPipelineLayout &operator=(const VKRPipelineLayout &) = delete;
 	~VKRPipelineLayout();
 
-	enum { MAX_DESC_SET_BINDINGS = 5 };
+	enum { MAX_DESC_SET_BINDINGS = 9 };
 	BindingType bindingTypes[MAX_DESC_SET_BINDINGS];
 
 	uint32_t bindingTypesCount = 0;

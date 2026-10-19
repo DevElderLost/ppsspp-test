@@ -417,6 +417,7 @@ void PresentationCommon::DestroyReshadePrograms() {
 bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next) {
 	using namespace Draw;
 
+	static_assert(kReshadeMaxTextures <= (int)Draw::MAX_TEXTURE_SLOTS, "ReShade needs more texture slots than thin3d has");
 	ReshadeTarget target;
 	int glslVersion = 0;
 	if (lang_ == GLSL_VULKAN) {
@@ -502,7 +503,7 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 		return wrap == 1 ? TextureAddressMode::REPEAT : wrap == 2 ? TextureAddressMode::REPEAT_MIRROR : TextureAddressMode::CLAMP_TO_EDGE;
 	};
 	for (const ReshadePass &pass : program->passes) {
-		for (int slot = 0; slot < 3; slot++) {
+		for (int slot = 0; slot < kReshadeMaxTextures; slot++) {
 			const ReshadeSampler &s = pass.slotSampler[slot];
 			SamplerStateDesc sd{};
 			sd.magFilter = s.magLinear ? TextureFilter::LINEAR : TextureFilter::NEAREST;
@@ -597,7 +598,7 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 
 		draw_->BindFramebufferAsRenderTarget(target, { pass.clear ? RPAction::CLEAR : RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShade");
 
-		for (int slot = 0; slot < 3; slot++) {
+		for (int slot = 0; slot < kReshadeMaxTextures; slot++) {
 			switch (pass.slotKind[slot]) {
 			case ReshadeSlot::BACK_BUFFER:
 				if (backBuffer)
@@ -622,9 +623,11 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 				draw_->BindFramebufferAsTexture(rt.targets[pass.slotIndex[slot]], slot, Aspect::COLOR_BIT, 0);
 				break;
 			case ReshadeSlot::NONE:
+				// Don't leave a texture from an earlier pass bound (it may be the render target of this one).
+				draw_->BindTexture(slot, nullptr);
 				continue;
 			}
-			Draw::SamplerState *sampler = rt.samplers[p * 3 + slot];
+			Draw::SamplerState *sampler = rt.samplers[p * kReshadeMaxTextures + slot];
 			draw_->BindSamplerStates(slot, 1, &sampler);
 		}
 		(void)useNearest;
