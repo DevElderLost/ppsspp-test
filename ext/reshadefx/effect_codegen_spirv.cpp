@@ -3,6 +3,13 @@
  * License: https://github.com/crosire/reshade#license
  */
 
+// Explicit C library headers: libc++ in the NDK doesn't pull these in through <string> and friends.
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include "effect_parser.hpp"
 #include "effect_codegen.hpp"
 #include <cassert>

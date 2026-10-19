@@ -18,9 +18,13 @@
 
 // Postprocessing shader manager
 
-#include <string>
-#include <vector>
 #include <algorithm>
+#include <cctype>
+#include <initializer_list>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "Common/Log.h"
 #include "Common/Data/Format/IniFile.h"

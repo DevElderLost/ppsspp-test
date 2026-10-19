@@ -3,6 +3,13 @@
  * License: https://github.com/crosire/reshade#license
  */
 
+// Explicit C library headers: libc++ in the NDK doesn't pull these in through <string> and friends.
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include "effect_symbol_table.hpp"
 #include <cassert>
 #include <algorithm> // std::upper_bound, std::sort
