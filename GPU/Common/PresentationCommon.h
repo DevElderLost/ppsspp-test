@@ -17,8 +17,12 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include "Common/Common.h"
 #include "Common/GPU/Shader.h"
+#include "GPU/Common/ReshadeEffect.h"
 
 struct CardboardSettings {
 	bool enabled;
@@ -150,6 +154,8 @@ protected:
 	Draw::ShaderModule *CompileShaderModule(ShaderStage stage, ShaderLanguage lang, const std::string &src, std::string *errorString) const;
 	Draw::Pipeline *CreatePipeline(std::vector<Draw::ShaderModule *> shaders, bool postShader, const UniformBufferDesc *uniformDesc) const;
 	bool CompilePostShader(const ShaderInfo *shaderInfo, Draw::Pipeline **outPipeline) const;
+	bool BuildReshadeShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next);
+	void DestroyReshadePrograms();
 	bool BuildPostShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next, Draw::Pipeline **outPipeline);
 	bool AllocateFramebuffer(int w, int h);
 
@@ -168,6 +174,23 @@ protected:
 	std::vector<Draw::Pipeline *> postShaderPipelines_;
 	std::vector<Draw::Framebuffer *> postShaderFramebuffers_;
 	std::vector<ShaderInfo> postShaderInfo_;
+
+	// ReShade FX effects in the chain: each pass of an effect is one entry in postShaderPipelines_ / postShaderInfo_.
+	// A ReShade FX effect is ONE entry of the chain (reshadeProgram >= 0 in its ShaderInfo, null pipeline): all its
+	// passes run in RunReshadeEffect, which owns the render-target textures and the intermediate back buffers.
+	struct ReshadeRuntime {
+		std::shared_ptr<ReshadeProgram> program;
+		std::vector<Draw::Pipeline *> pipelines;       // one per pass
+		std::vector<Draw::Texture *> images;           // textures loaded from files
+		std::vector<Draw::Framebuffer *> targets;      // the effect's render-target textures
+		Draw::Framebuffer *backBuffers[2] = {};        // back buffer copies between passes that write the screen
+		std::vector<Draw::SamplerState *> samplers;    // [pass * 3 + slot]
+		double startTime = 0.0;
+		double lastTime = 0.0;
+		ReshadeFrameState state;
+	};
+	std::vector<ReshadeRuntime> reshade_;
+	void RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer *output, bool useNearest);
 	std::vector<Draw::Framebuffer *> previousFramebuffers_;
 	
 	Draw::Pipeline *stereoPipeline_ = nullptr;

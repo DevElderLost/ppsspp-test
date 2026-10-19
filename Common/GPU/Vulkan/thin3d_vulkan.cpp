@@ -463,6 +463,7 @@ public:
 	void BindFramebufferSamplesAsTexture(Framebuffer *fbo, int binding, int layer) override;
 
 	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
+	bool FramebufferHasDepth(Framebuffer *fbo) override;
 
 	void SetScissorRect(int left, int top, int width, int height) override;
 	void SetViewport(const Viewport &viewport) override;
@@ -1865,7 +1866,10 @@ Framebuffer *VKContext::CreateFramebuffer(const FramebufferDesc &desc) {
 	_assert_(desc.width > 0);
 	_assert_(desc.height > 0);
 
-	VKRFramebuffer *vkrfb = new VKRFramebuffer(vulkan_, &renderManager_.PostInitBarrier(), desc.width, desc.height, desc.numLayers, desc.multiSampleLevel, desc.z_stencil, desc.tag);
+	// Only RGBA8 and RGBA16F color buffers exist; every float format stands in as RGBA16F.
+	const bool hdr = desc.colorFormat == DataFormat::R16G16B16A16_FLOAT || desc.colorFormat == DataFormat::R16_FLOAT || desc.colorFormat == DataFormat::R32G32B32A32_FLOAT;
+	const VkFormat colorFormat = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+	VKRFramebuffer *vkrfb = new VKRFramebuffer(vulkan_, &renderManager_.PostInitBarrier(), desc.width, desc.height, desc.numLayers, desc.multiSampleLevel, desc.z_stencil, desc.tag, colorFormat, std::max(1, desc.mipLevels));
 	return new VKFramebuffer(vkrfb, desc.multiSampleLevel);
 }
 
@@ -1964,6 +1968,10 @@ void VKContext::BindFramebufferSamplesAsTexture(Framebuffer *fbo, int binding, i
 	_assert_(fb != curFramebuffer_);
 	boundTextures_[binding].reset(nullptr);
 	boundImageView_[binding] = renderManager_.BindFramebufferAsTexture(fb->GetFB(), binding, VK_IMAGE_ASPECT_COLOR_BIT, layer, true);
+}
+
+bool VKContext::FramebufferHasDepth(Framebuffer *fbo) {
+	return fbo && ((VKFramebuffer *)fbo)->GetFB()->HasDepth();
 }
 
 void VKContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) {

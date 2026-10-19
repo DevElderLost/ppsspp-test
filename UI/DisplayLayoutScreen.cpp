@@ -19,6 +19,8 @@
 
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
+#include "Common/System/Request.h"
+#include "Common/System/OSD.h"
 #include "Common/Render/TextureAtlas.h"
 #include "Common/Render/DrawBuffer.h"
 #include "Common/UI/Context.h"
@@ -41,6 +43,7 @@
 #include "Core/System.h"
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
+#include "GPU/Common/PostShader.h"
 #include "GPU/Common/PresentationCommon.h"
 
 static const int leftColumnWidth = 200;
@@ -354,6 +357,23 @@ void DisplayLayoutScreen::CreateViews() {
 	};
 
 	leftColumn->Add(new ItemHeader(gr->T("Postprocessing shaders")));
+
+	// ReShade FX shaders (.fx, or a zip with a shader pack) are listed with the other post-processing shaders once imported.
+	leftColumn->Add(new Choice(gr->T("Import ReShade shaders...")))->OnClick.Add([this](UI::EventParams &e) {
+		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+		System_BrowseForFile(GetRequesterToken(), gr->T("Import ReShade shaders..."), BrowseFileType::ANY, [this](std::string_view value, int) {
+			if (value.empty())
+				return;
+			std::string message;
+			if (ImportReshadeFiles(Path(value), &message)) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, message);
+				ReloadAllPostShaderInfo(screenManager()->getDrawContext());
+				RecreateViews();
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, message);
+			}
+		});
+	});
 
 	std::set<std::string> alreadyAddedShader;
 	// If there's a single post shader and we're just entering the dialog,

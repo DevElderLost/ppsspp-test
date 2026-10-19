@@ -34,6 +34,7 @@
 #include "Core/System.h"
 #include "Core/HW/Display.h"
 #include "GPU/Common/PostShader.h"
+#include "GPU/Common/ReshadeEffect.h"
 #include "GPU/Common/PresentationCommon.h"
 #include "GPU/GPUState.h"
 #include "Common/GPU/ShaderTranslation.h"
@@ -299,6 +300,14 @@ bool PresentationCommon::UpdatePostShader(const DisplayLayoutConfig &config) {
 	bool usePreviousAtOutputResolution = false;
 	for (size_t i = 0; i < shaderInfo.size(); ++i) {
 		const ShaderInfo *next = i + 1 < shaderInfo.size() ? shaderInfo[i + 1] : nullptr;
+		if (!shaderInfo[i]->reshadeFile.empty()) {
+			// A ReShade FX shader: adds one chain entry per pass.
+			if (!BuildReshadeShader(config, shaderInfo[i], next)) {
+				DestroyPostShader();
+				return false;
+			}
+			continue;
+		}
 		Draw::Pipeline *postPipeline = nullptr;
 		if (!BuildPostShader(config, shaderInfo[i], next, &postPipeline)) {
 			DestroyPostShader();
@@ -383,6 +392,258 @@ bool PresentationCommon::CompilePostShader(const ShaderInfo *shaderInfo, Draw::P
 
 	*outPipeline = pipeline;
 	return true;
+}
+
+template <typename T>
+static void DoRelease(T *&obj);
+template <typename T>
+static void DoReleaseVector(std::vector<T *> &list);
+
+void PresentationCommon::DestroyReshadePrograms() {
+	for (ReshadeRuntime &rt : reshade_) {
+		DoReleaseVector(rt.pipelines);
+		DoReleaseVector(rt.images);
+		DoReleaseVector(rt.targets);
+		DoReleaseVector(rt.samplers);
+		DoRelease(rt.backBuffers[0]);
+		DoRelease(rt.backBuffers[1]);
+	}
+	reshade_.clear();
+}
+
+// Compiles a ReShade FX file (see ReshadeEffect.h) and adds it to the chain as one entry. All of its passes, render
+// targets and samplers are created here and driven by RunReshadeEffect.
+bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next) {
+	using namespace Draw;
+
+	ReshadeTarget target;
+	int glslVersion = 0;
+	if (lang_ == GLSL_VULKAN) {
+		target = ReshadeTarget::VULKAN;
+	} else if (lang_ == GLSL_3xx) {
+		const ShaderLanguageDesc &desc = draw_->GetShaderLanguageDesc();
+		glslVersion = desc.glslVersionNumber;
+		target = desc.gles ? ReshadeTarget::GLSL_ES3 : ReshadeTarget::GLSL_DESKTOP;
+		if ((desc.gles && glslVersion < 300) || (!desc.gles && glslVersion < 330)) {
+			ShowPostShaderError("ReShade shaders need OpenGL ES 3.0 / OpenGL 3.3 or newer");
+			return false;
+		}
+	} else {
+		ShowPostShaderError("ReShade shaders need the OpenGL (ES 3+) or Vulkan backend");
+		return false;
+	}
+
+	// The same size the first pass of a regular shader would get.
+	int width = renderWidth_;
+	int height = renderHeight_;
+	if (!postShaderFramebuffers_.empty())
+		draw_->GetFramebufferDimensions(postShaderFramebuffers_.back(), &width, &height);
+	if (width <= 0 || height <= 0) {
+		width = 480;
+		height = 272;
+	}
+
+	auto program = std::make_shared<ReshadeProgram>();
+	const std::string fxPath = shaderInfo->reshadeFile.ToString();
+	if (!ReshadeCompile(fxPath, GetReshadeShadersDir().ToString(), GetReshadeTexturesDir().ToString(), width, height, target, glslVersion, program.get())) {
+		ERROR_LOG(Log::FrameBuf, "ReShade shader %s: %s", fxPath.c_str(), program->error.c_str());
+		ShowPostShaderError(shaderInfo->name + ": " + program->error);
+		return false;
+	}
+	if (!program->warning.empty())
+		g_OSD.Show(OSDType::MESSAGE_WARNING, shaderInfo->name + ": missing textures: " + program->warning);
+
+	reshade_.emplace_back();
+	const int programIndex = (int)reshade_.size() - 1;
+	ReshadeRuntime &rt = reshade_.back();
+	rt.program = program;
+	rt.startTime = time_now_d();
+	rt.lastTime = rt.startTime;
+
+	auto fail = [&](const std::string &message) {
+		ShowPostShaderError(shaderInfo->name + ": " + message);
+		return false;
+	};
+
+	for (const ReshadeImage &img : program->images) {
+		Draw::TextureDesc desc{};
+		desc.type = Draw::TextureType::LINEAR2D;
+		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
+		desc.width = img.width;
+		desc.height = img.height;
+		desc.depth = 1;
+		desc.mipLevels = 1;
+		desc.generateMips = false;
+		desc.tag = "reshade_image";
+		desc.initData.push_back(img.rgba.data());
+		Draw::Texture *tex = draw_->CreateTexture(desc);
+		if (!tex)
+			return fail("couldn't create a texture");
+		rt.images.push_back(tex);
+	}
+
+	// Render-target textures: RGBA8 or half float, with mipmaps when the shader asks for them.
+	for (const ReshadeTexture &t : program->textures) {
+		int maxLevels = 1;
+		for (int m = std::max(t.width, t.height); m > 1; m >>= 1)
+			maxLevels++;
+		FramebufferDesc fd{ t.width, t.height, 1, 1, 0, false, "reshade_texture" };
+		fd.colorFormat = t.format == ReshadeFormat::RGBA16F ? DataFormat::R16G16B16A16_FLOAT : DataFormat::R8G8B8A8_UNORM;
+		fd.mipLevels = std::max(1, std::min(t.levels, maxLevels));
+		Draw::Framebuffer *fb = draw_->CreateFramebuffer(fd);
+		if (!fb)
+			return fail("couldn't create a render target");
+		rt.targets.push_back(fb);
+	}
+
+	// Samplers: one per pass and slot, with the filtering and wrapping the shader declared.
+	auto wrapMode = [](int wrap) {
+		return wrap == 1 ? TextureAddressMode::REPEAT : wrap == 2 ? TextureAddressMode::REPEAT_MIRROR : TextureAddressMode::CLAMP_TO_EDGE;
+	};
+	for (const ReshadePass &pass : program->passes) {
+		for (int slot = 0; slot < 3; slot++) {
+			const ReshadeSampler &s = pass.slotSampler[slot];
+			SamplerStateDesc sd{};
+			sd.magFilter = s.magLinear ? TextureFilter::LINEAR : TextureFilter::NEAREST;
+			sd.minFilter = s.minLinear ? TextureFilter::LINEAR : TextureFilter::NEAREST;
+			sd.mipFilter = s.mipLinear ? TextureFilter::LINEAR : TextureFilter::NEAREST;
+			sd.maxAniso = 0.0f;
+			sd.wrapU = wrapMode(s.wrapU);
+			sd.wrapV = wrapMode(s.wrapV);
+			sd.wrapW = TextureAddressMode::CLAMP_TO_EDGE;
+			rt.samplers.push_back(draw_->CreateSamplerState(sd));
+		}
+	}
+
+	// Uniform description: GL sets uniforms by name (floats only), Vulkan takes the raw block.
+	UniformBufferDesc uboDesc{ program->uniformBufferSize, {} };
+	if (target != ReshadeTarget::VULKAN) {
+		int index = 0;
+		for (const ReshadeUniform &u : program->uniforms) {
+			if (!u.isFloat)
+				continue;
+			UniformType type = u.components >= 4 ? UniformType::FLOAT4 : u.components == 3 ? UniformType::FLOAT3 : u.components == 2 ? UniformType::FLOAT2 : UniformType::FLOAT1;
+			uboDesc.uniforms.push_back({ u.glName.c_str(), (int16_t)index, (int16_t)index, type, (int16_t)u.offset });
+			index++;
+		}
+	}
+
+	for (const ReshadePass &pass : program->passes) {
+		std::string vsError, fsError;
+		Draw::ShaderModule *vs = CompileShaderModule(ShaderStage::Vertex, lang_, pass.vs, &vsError);
+		Draw::ShaderModule *fs = CompileShaderModule(ShaderStage::Fragment, lang_, pass.fs, &fsError);
+		if (!vs || !fs) {
+			if (vs) vs->Release();
+			if (fs) fs->Release();
+			return fail(vsError + "\n" + fsError);
+		}
+		Draw::Pipeline *pipeline = CreatePipeline({ vs, fs }, true, &uboDesc);
+		fs->Release();
+		vs->Release();
+		if (!pipeline)
+			return fail("the GPU driver rejected the shader");
+		rt.pipelines.push_back(pipeline);
+	}
+
+	// The effect's output framebuffer. These shaders don't run at output resolution: the final blit scales it.
+	int nextWidth = width;
+	int nextHeight = height;
+	if (next && next->isUpscalingFilter) {
+		const bool isPortrait = config.InternalRotationIsPortrait();
+		nextWidth = isPortrait ? 272 : 480;
+		nextHeight = isPortrait ? 480 : 272;
+	} else if (next && next->SSAAFilterLevel >= 2) {
+		nextWidth *= next->SSAAFilterLevel;
+		nextHeight *= next->SSAAFilterLevel;
+	}
+	if (!AllocateFramebuffer(nextWidth, nextHeight))
+		return false;
+
+	// Intermediate back buffers, for shaders that write the screen more than once. Same size as the output.
+	for (int i = 0; i < 2 && program->backBufferWrites > i + 1; i++) {
+		rt.backBuffers[i] = draw_->CreateFramebuffer({ nextWidth, nextHeight, 1, 1, 0, false, "reshade_backbuffer" });
+		if (!rt.backBuffers[i])
+			return fail("couldn't create a framebuffer");
+	}
+
+	ShaderInfo info = *shaderInfo;
+	info.reshadeProgram = programIndex;
+	postShaderPipelines_.push_back(nullptr);
+	postShaderInfo_.push_back(info);
+	return true;
+}
+
+// Runs every pass of the effect. The previous chain output (or the displayed framebuffer for the first entry) is
+// ReShade's back buffer; the last pass that writes the screen renders into `output`.
+void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer *output, bool useNearest) {
+	using namespace Draw;
+	const ReshadeProgram &program = *rt.program;
+	Draw::Framebuffer *input = postShaderOutput_;  // nullptr: the original source.
+	Draw::Framebuffer *backBuffer = input;
+	int writes = 0;
+
+	std::vector<uint8_t> block(program.uniformBufferSize, 0);
+	ReshadeFillUniforms(program, rt.state, block.data());
+
+	for (size_t p = 0; p < program.passes.size(); p++) {
+		const ReshadePass &pass = program.passes[p];
+		Draw::Framebuffer *target;
+		if (pass.renderTarget >= 0) {
+			target = rt.targets[pass.renderTarget];
+		} else {
+			target = writes + 1 == program.backBufferWrites ? output : rt.backBuffers[writes & 1];
+		}
+
+		draw_->BindFramebufferAsRenderTarget(target, { pass.clear ? RPAction::CLEAR : RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShade");
+
+		for (int slot = 0; slot < 3; slot++) {
+			switch (pass.slotKind[slot]) {
+			case ReshadeSlot::BACK_BUFFER:
+				if (backBuffer)
+					draw_->BindFramebufferAsTexture(backBuffer, slot, Aspect::COLOR_BIT, 0);
+				else
+					BindSource(slot, false);
+				break;
+			case ReshadeSlot::DEPTH:
+				// The depth buffer of the displayed framebuffer. Without one (software rendering, or a framebuffer
+				// without depth) the shader gets the colors, like vkBasalt does.
+				if (srcFramebuffer_ && draw_->FramebufferHasDepth(srcFramebuffer_))
+					draw_->BindFramebufferAsTexture(srcFramebuffer_, slot, Aspect::DEPTH_BIT, 0);
+				else if (backBuffer)
+					draw_->BindFramebufferAsTexture(backBuffer, slot, Aspect::COLOR_BIT, 0);
+				else
+					BindSource(slot, false);
+				break;
+			case ReshadeSlot::IMAGE:
+				draw_->BindTexture(slot, rt.images[pass.slotIndex[slot]]);
+				break;
+			case ReshadeSlot::RENDER_TARGET:
+				draw_->BindFramebufferAsTexture(rt.targets[pass.slotIndex[slot]], slot, Aspect::COLOR_BIT, 0);
+				break;
+			case ReshadeSlot::NONE:
+				continue;
+			}
+			Draw::SamplerState *sampler = rt.samplers[p * 3 + slot];
+			draw_->BindSamplerStates(slot, 1, &sampler);
+		}
+		(void)useNearest;
+
+		int width, height;
+		draw_->GetFramebufferDimensions(target, &width, &height);
+		draw_->SetViewport(Draw::Viewport{ 0, 0, (float)width, (float)height, 0.0f, 1.0f });
+		draw_->SetScissorRect(0, 0, width, height);
+
+		draw_->BindPipeline(rt.pipelines[p]);
+		draw_->UpdateDynamicUniformBuffer(block.data(), block.size());
+		// The ReShade vertex shader makes its own full screen triangle from the vertex index.
+		draw_->BindVertexBuffer(vdata_, (int)sizeof(Vertex) * 4);
+		draw_->Draw(4, 0);
+
+		if (pass.renderTarget < 0) {
+			backBuffer = target;
+			writes++;
+		}
+	}
 }
 
 bool PresentationCommon::BuildPostShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo * next, Draw::Pipeline **outPipeline) {
@@ -584,6 +845,7 @@ void PresentationCommon::DestroyPostShader() {
 	DoReleaseVector(postShaderPipelines_);
 	DoReleaseVector(postShaderFramebuffers_);
 	DoReleaseVector(previousFramebuffers_);
+	DestroyReshadePrograms();
 	postShaderInfo_.clear();
 	postShaderFBOUsage_.clear();
 }
@@ -804,6 +1066,17 @@ void PresentationCommon::RunPostshaderPasses(const DisplayLayoutConfig &config, 
 	// Grab the previous framebuffer early so we can change previousIndex_ when we want.
 	Draw::Framebuffer *previousFramebuffer = previousFramebuffers_.empty() ? nullptr : previousFramebuffers_[previousIndex_];
 
+	// ReShade effects count frames and time once per presented frame, however many passes they have.
+	if (!reshade_.empty()) {
+		const double now = time_now_d();
+		for (ReshadeRuntime &rt : reshade_) {
+			rt.state.timerMs = (now - rt.startTime) * 1000.0;
+			rt.state.frameTimeMs = (float)((now - rt.lastTime) * 1000.0);
+			rt.state.frame++;
+			rt.lastTime = now;
+		}
+	}
+
 	const auto performShaderPass = [&](const ShaderInfo *shaderInfo, Draw::Framebuffer *postShaderFramebuffer, Draw::Pipeline *postShaderPipeline, int vertsOffset) {
 		if (postShaderOutput_) {
 			draw_->BindFramebufferAsTexture(postShaderOutput_, 0, Draw::Aspect::COLOR_BIT, 0);
@@ -868,6 +1141,17 @@ void PresentationCommon::RunPostshaderPasses(const DisplayLayoutConfig &config, 
 				if (previousIndex_ >= (int)previousFramebuffers_.size())
 					previousIndex_ = 0;
 				postShaderFramebuffer = previousFramebuffers_[previousIndex_];
+			}
+
+			if (shaderInfo->reshadeProgram >= 0) {
+				// A ReShade effect: all its passes in one go, the last one renders into this entry's framebuffer.
+				RunReshadeEffect(reshade_[shaderInfo->reshadeProgram], postShaderFramebuffer, useNearest);
+				int outWidth, outHeight;
+				draw_->GetFramebufferDimensions(postShaderFramebuffer, &outWidth, &outHeight);
+				postShaderOutput_ = postShaderFramebuffer;
+				lastWidth = outWidth;
+				lastHeight = outHeight;
+				continue;
 			}
 
 			draw_->BindFramebufferAsRenderTarget(postShaderFramebuffer, {Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE}, "PostShader");

@@ -52,6 +52,8 @@ struct GLExtensions {
 	bool OES_depth24;
 	bool OES_packed_depth_stencil;
 	bool OES_depth_texture;
+	bool EXT_color_buffer_float;
+	bool EXT_color_buffer_half_float;
 	bool OES_mapbuffer;
 	bool OES_vertex_array_object;
 	bool OES_copy_image;

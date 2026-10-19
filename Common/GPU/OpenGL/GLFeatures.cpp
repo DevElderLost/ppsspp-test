@@ -399,6 +399,8 @@ bool CheckGLExtensions() {
 		gl_extensions.OES_packed_depth_stencil = (g_set_gl_extensions.count("GL_OES_packed_depth_stencil") != 0) || gl_extensions.GLES3;
 		gl_extensions.OES_depth24 = g_set_gl_extensions.count("GL_OES_depth24") != 0;
 		gl_extensions.OES_depth_texture = g_set_gl_extensions.count("GL_OES_depth_texture") != 0;
+		gl_extensions.EXT_color_buffer_float = g_set_gl_extensions.count("GL_EXT_color_buffer_float") != 0;
+		gl_extensions.EXT_color_buffer_half_float = g_set_gl_extensions.count("GL_EXT_color_buffer_half_float") != 0;
 		gl_extensions.OES_mapbuffer = g_set_gl_extensions.count("GL_OES_mapbuffer") != 0;
 		gl_extensions.EXT_blend_minmax = g_set_gl_extensions.count("GL_EXT_blend_minmax") != 0;
 		gl_extensions.EXT_unpack_subimage = g_set_gl_extensions.count("GL_EXT_unpack_subimage") != 0;

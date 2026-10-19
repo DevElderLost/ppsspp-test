@@ -26,6 +26,9 @@
 #include "Common/Data/Format/IniFile.h"
 #include "Common/File/DirListing.h"
 #include "Common/File/VFS/VFS.h"
+#include "Common/File/VFS/ZipFileReader.h"
+#include "Common/File/FileUtil.h"
+#include "Core/Config.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/GPU/thin3d.h"
 #include "Common/StringUtils.h"
@@ -275,12 +278,183 @@ void LoadPostShaderInfo(Draw::DrawContext *draw, const std::vector<Path> &direct
 	}
 }
 
+Path GetReshadeShadersDir() {
+	return g_Config.internalDataDirectory / "reshade" / "Shaders";
+}
+
+Path GetReshadeTexturesDir() {
+	return g_Config.internalDataDirectory / "reshade" / "Textures";
+}
+
+static bool HasExtension(std::string_view name, std::initializer_list<const char *> exts) {
+	size_t dot = name.find_last_of('.');
+	if (dot == std::string_view::npos)
+		return false;
+	std::string ext(name.substr(dot + 1));
+	std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)tolower(c); });
+	for (const char *e : exts)
+		if (ext == e)
+			return true;
+	return false;
+}
+
+// ReShade.fxh and ReShadeUI.fxh are included by nearly every .fx, so they travel with the app.
+static void EnsureReshadeCoreFiles() {
+	const Path dir = GetReshadeShadersDir();
+	for (const char *name : { "ReShade.fxh", "ReShadeUI.fxh" }) {
+		const Path dest = dir / name;
+		if (File::Exists(dest))
+			continue;
+		size_t size = 0;
+		uint8_t *data = g_VFS.ReadFile((std::string("shaders/reshade/") + name).c_str(), &size);
+		if (!data)
+			continue;
+		File::CreateFullPath(dir);
+		File::WriteDataToFile(false, data, size, dest);
+		delete[] data;
+	}
+}
+
+// Adds every .fx in `dir` (and one level of subfolders) to the shader list.
+static void ScanReshadeDir(const Path &dir, const std::string &prefix, int depth, std::vector<ShaderInfo> *out) {
+	std::vector<File::FileInfo> files;
+	if (!File::GetFilesInDir(dir, &files, nullptr))
+		return;
+	for (const File::FileInfo &f : files) {
+		if (f.isDirectory) {
+			if (depth < 1)
+				ScanReshadeDir(f.fullName, prefix + f.name + "/", depth + 1, out);
+			continue;
+		}
+		if (!HasExtension(f.name, { "fx" }))
+			continue;
+		ShaderInfo info{};
+		info.reshadeFile = f.fullName;
+		info.section = "reshade/" + prefix + f.name;
+		info.name = prefix + f.name.substr(0, f.name.find_last_of('.')) + " (ReShade)";
+		info.visible = true;
+		info.outputResolution = false;
+		for (size_t i = 0; i < ARRAY_SIZE(info.settings); ++i) {
+			info.settings[i].name.clear();
+			info.settings[i].value = 0.0f;
+			info.settings[i].minValue = -1.0f;
+			info.settings[i].maxValue = 1.0f;
+			info.settings[i].step = 0.01f;
+		}
+		out->push_back(info);
+	}
+}
+
 // Scans the directories for shader ini files and collects info about all the shaders found.
 void ReloadAllPostShaderInfo(Draw::DrawContext *draw) {
 	std::vector<Path> directories;
 	directories.push_back(Path("shaders"));  // For VFS
 	directories.push_back(GetSysDirectory(DIRECTORY_CUSTOM_SHADERS));
 	LoadPostShaderInfo(draw, directories);
+
+	// ReShade FX shaders. They go after the ini shaders, before the hidden ones, and keep the list sorted.
+	EnsureReshadeCoreFiles();
+	std::vector<ShaderInfo> reshade;
+	ScanReshadeDir(GetReshadeShadersDir(), "", 0, &reshade);
+	if (!reshade.empty()) {
+		std::sort(reshade.begin(), reshade.end());
+		for (const ShaderInfo &info : reshade) {
+			auto beginErase = std::remove(shaderInfo.begin(), shaderInfo.end(), info.name);
+			shaderInfo.erase(beginErase, shaderInfo.end());
+			// Insert after "Off" and the visible ini shaders: before the first not visible one.
+			auto pos = std::find_if(shaderInfo.begin(), shaderInfo.end(), [](const ShaderInfo &i) { return !i.visible; });
+			shaderInfo.insert(pos, info);
+		}
+	}
+}
+
+static bool ImportReshadeEntry(const std::string &name, const uint8_t *data, size_t size, int *effects, int *includes, int *textures) {
+	// Keep sub-paths below Shaders/ and Textures/, otherwise sort by extension. Never leave the reshade folder.
+	std::string path = name;
+	std::replace(path.begin(), path.end(), '\\', '/');
+	std::vector<std::string> parts;
+	SplitString(path, '/', parts);
+	std::vector<std::string> clean;
+	for (const std::string &part : parts) {
+		if (part == "..")
+			return false;
+		if (!part.empty() && part != ".")
+			clean.push_back(part);
+	}
+	if (clean.empty())
+		return false;
+
+	int shadersIndex = -1, texturesIndex = -1;
+	for (int i = 0; i < (int)clean.size() - 1; i++) {
+		if (equalsNoCase(clean[i], "Shaders")) shadersIndex = i;
+		if (equalsNoCase(clean[i], "Textures")) texturesIndex = i;
+	}
+	const std::string &leaf = clean.back();
+	const bool isFx = HasExtension(leaf, { "fx" });
+	const bool isInclude = HasExtension(leaf, { "fxh", "h", "inc" });
+	const bool isImage = HasExtension(leaf, { "png", "jpg", "jpeg", "bmp", "tga" });
+	if (!isFx && !isInclude && !isImage)
+		return false;
+
+	Path dest;
+	if (texturesIndex >= 0 && texturesIndex > shadersIndex) {
+		dest = GetReshadeTexturesDir();
+		for (size_t i = texturesIndex + 1; i < clean.size(); i++) dest = dest / clean[i];
+	} else if (shadersIndex >= 0) {
+		dest = GetReshadeShadersDir();
+		for (size_t i = shadersIndex + 1; i < clean.size(); i++) dest = dest / clean[i];
+	} else {
+		dest = (isImage ? GetReshadeTexturesDir() : GetReshadeShadersDir()) / leaf;
+	}
+	File::CreateFullPath(dest.NavigateUp());
+	if (!File::WriteDataToFile(false, data, size, dest))
+		return false;
+	if (isFx) (*effects)++;
+	else if (isImage) (*textures)++;
+	else (*includes)++;
+	return true;
+}
+
+static void ImportReshadeZipDir(ZipFileReader *zip, const std::string &dir, int depth, int *effects, int *includes, int *textures) {
+	std::vector<File::FileInfo> listing;
+	if (!zip->GetFileListing(dir, &listing, nullptr) || depth > 8)
+		return;
+	for (const File::FileInfo &f : listing) {
+		const std::string full = dir.empty() ? f.name : dir + f.name;
+		if (f.isDirectory) {
+			ImportReshadeZipDir(zip, full + "/", depth + 1, effects, includes, textures);
+			continue;
+		}
+		size_t size = 0;
+		uint8_t *data = zip->ReadFile(full, &size);
+		if (!data)
+			continue;
+		ImportReshadeEntry(full, data, size, effects, includes, textures);
+		delete[] data;
+	}
+}
+
+bool ImportReshadeFiles(const Path &source, std::string *message) {
+	int effects = 0, includes = 0, textures = 0;
+
+	// Content URIs (Android's file picker) don't have a usable extension, so try it as a zip first.
+	std::unique_ptr<ZipFileReader> zip(ZipFileReader::Create(source, "", false));
+	if (zip) {
+		ImportReshadeZipDir(zip.get(), "", 0, &effects, &includes, &textures);
+	} else {
+		std::string data;
+		if (!File::ReadBinaryFileToString(source, &data)) {
+			*message = "Couldn't read the file";
+			return false;
+		}
+		ImportReshadeEntry(source.GetFilename(), (const uint8_t *)data.data(), data.size(), &effects, &includes, &textures);
+	}
+	if (effects + includes + textures == 0) {
+		*message = "No ReShade shaders (.fx, .fxh) or textures found";
+		return false;
+	}
+	*message = StringFromFormat("%d shaders, %d include files, %d textures", effects, includes, textures);
+	return true;
 }
 
 void RemoveUnknownPostShaders(std::vector<std::string> *names) {

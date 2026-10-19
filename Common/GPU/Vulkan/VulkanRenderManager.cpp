@@ -1019,6 +1019,10 @@ void VulkanRenderManager::EndCurRenderStep() {
 		if (curRenderStep_->render.framebuffer->sampleCount != VK_SAMPLE_COUNT_1_BIT) {
 			rpType = (RenderPassType)(rpType | RenderPassType::MULTISAMPLE);
 		}
+
+		if (curRenderStep_->render.framebuffer->color.format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+			rpType = (RenderPassType)(rpType | RenderPassType::FLOAT16);
+		}
 	}
 
 	VKRRenderPass *renderPass = queueRunner_.GetRenderPass(key);
