@@ -720,7 +720,10 @@ bool PSPCustomStick::Touch(const TouchInput &input) {
 	return retval;
 }
 
-void PSPCustomStick::ProcessTouch(float x, float y, bool down) {
+// Applies a position of the right analog stick (each axis -1 to 1, down positive) through the "Right
+// analog stick custom" mapping: buttons that cross half way, and the axes the user mapped.
+// down == false lets everything go.
+static void ApplyRightAnalogDeflection(float dx, float dy, bool down) {
 	static const int buttons[] = {0, CTRL_LTRIGGER, CTRL_RTRIGGER, CTRL_SQUARE, CTRL_TRIANGLE, CTRL_CIRCLE, CTRL_CROSS, CTRL_UP, CTRL_DOWN, CTRL_LEFT, CTRL_RIGHT, CTRL_START, CTRL_SELECT};
 	static const int analogs[] = {VIRTKEY_AXIS_RIGHT_Y_MAX, VIRTKEY_AXIS_RIGHT_Y_MIN, VIRTKEY_AXIS_RIGHT_X_MIN, VIRTKEY_AXIS_RIGHT_X_MAX, VIRTKEY_AXIS_Y_MAX, VIRTKEY_AXIS_Y_MIN, VIRTKEY_AXIS_X_MIN, VIRTKEY_AXIS_X_MAX};
 	u32 press = 0;
@@ -801,6 +804,30 @@ void PSPCustomStick::ProcessTouch(float x, float y, bool down) {
 		}
 	};
 
+	if (down) {
+		toggle(g_Config.iRightAnalogRight, dx > 0.5f, fabs(dx) > fabs(dy));
+		toggle(g_Config.iRightAnalogLeft, dx < -0.5f, fabs(dx) > fabs(dy));
+		toggle(g_Config.iRightAnalogUp, dy < -0.5f, fabs(dx) <= fabs(dy));
+		toggle(g_Config.iRightAnalogDown, dy > 0.5f, fabs(dx) <= fabs(dy));
+		toggle(g_Config.iRightAnalogPress, true);
+
+		analog(dx, dy);
+	} else {
+		toggle(g_Config.iRightAnalogRight, false);
+		toggle(g_Config.iRightAnalogLeft, false);
+		toggle(g_Config.iRightAnalogUp, false);
+		toggle(g_Config.iRightAnalogDown, false);
+		toggle(g_Config.iRightAnalogPress, false);
+
+		analog(0.0f, 0.0f);
+	}
+
+	if (release || press) {
+		__CtrlUpdateButtons(press, release);
+	}
+}
+
+void PSPCustomStick::ProcessTouch(float x, float y, bool down) {
 	if (down && centerX_ >= 0.0f) {
 		float inv_stick_size = 1.0f / (stick_size_ * scale_);
 
@@ -810,32 +837,15 @@ void PSPCustomStick::ProcessTouch(float x, float y, bool down) {
 		dx = std::min(1.0f, std::max(-1.0f, dx));
 		dy = std::min(1.0f, std::max(-1.0f, dy));
 
-		toggle(g_Config.iRightAnalogRight, dx > 0.5f, fabs(dx) > fabs(dy));
-		toggle(g_Config.iRightAnalogLeft, dx < -0.5f, fabs(dx) > fabs(dy));
-		toggle(g_Config.iRightAnalogUp, dy < -0.5f, fabs(dx) <= fabs(dy));
-		toggle(g_Config.iRightAnalogDown, dy > 0.5f, fabs(dx) <= fabs(dy));
-		toggle(g_Config.iRightAnalogPress, true);
-
-		analog(dx, dy);
+		ApplyRightAnalogDeflection(dx, dy, true);
 
 		posX_ = dx;
 		posY_ = dy;
-
 	} else {
-		toggle(g_Config.iRightAnalogRight, false);
-		toggle(g_Config.iRightAnalogLeft, false);
-		toggle(g_Config.iRightAnalogUp, false);
-		toggle(g_Config.iRightAnalogDown, false);
-		toggle(g_Config.iRightAnalogPress, false);
-
-		analog(0.0f, 0.0f);
+		ApplyRightAnalogDeflection(0.0f, 0.0f, false);
 
 		posX_ = 0.0f;
 		posY_ = 0.0f;
-	}
-
-	if (release || press) {
-		__CtrlUpdateButtons(press, release);
 	}
 }
 
@@ -1122,6 +1132,10 @@ GamepadEmuView::GamepadEmuView(const TouchControlConfig &config, float xres, flo
 			Add(new GestureGamepad(controlMapper, i, new AnchorLayoutParams(FILL_PARENT, FILL_PARENT, 0.0f, 0.0f, 0.0f, 0.0f)));
 		}
 	}
+
+	// The free screen camera drag. Always added, it checks the setting itself, so that turning it on in the
+	// menu works without recreating the controls. Last, so that every touch control gets its pointers first.
+	Add(new CameraDragGamepad(new AnchorLayoutParams(FILL_PARENT, FILL_PARENT, 0.0f, 0.0f, 0.0f, 0.0f)));
 }
 
 void GamepadEmuView::Update() {
@@ -1146,6 +1160,131 @@ void GamepadEmuView::Update() {
 const GestureControlConfig &GestureGamepad::GetZone() {
 	// TODO: Add support for multiple zones.
 	return g_Config.gestureControls[zoneIndex_];
+}
+
+CameraDragGamepad::~CameraDragGamepad() {
+	Release();
+	if (driving_) {
+		if (g_Config.bRightAnalogCustom)
+			ApplyRightAnalogDeflection(0.0f, 0.0f, false);
+		else
+			__CtrlSetAnalogXY(1, 0.0f, 0.0f);
+	}
+}
+
+bool CameraDragGamepad::InZone(float x) const {
+	switch (g_Config.iTouchCameraZone) {
+	case 1: return x >= bounds_.x + bounds_.w * 0.5f;
+	case 2: return x < bounds_.x + bounds_.w * 0.5f;
+	default: return true;
+	}
+}
+
+void CameraDragGamepad::Release() {
+	if (dragPointerId_ != -1) {
+		g_activeGesturePointers.erase(dragPointerId_);
+		dragPointerId_ = -1;
+	}
+	pendingX_ = 0.0f;
+	pendingY_ = 0.0f;
+}
+
+bool CameraDragGamepad::Touch(const TouchInput &input) {
+	// See the comment in MultiTouchButton::Touch().
+	if (input.id < 0 || input.id >= TOUCH_MAX_POINTERS) {
+		return false;
+	}
+
+	if (!g_Config.bTouchCameraDrag) {
+		Release();
+		return false;
+	}
+
+	// A finger that went down on a touch control belongs to that control.
+	if (usedPointerMask & (1 << input.id)) {
+		if (input.id == dragPointerId_)
+			Release();
+		return false;
+	}
+
+	if (input.flags & TouchInputFlags::RELEASE_ALL) {
+		Release();
+		return false;
+	}
+
+	if (input.flags & TouchInputFlags::DOWN) {
+		if (dragPointerId_ == -1 && InZone(input.x)) {
+			dragPointerId_ = input.id;
+			lastX_ = downX_ = input.x;
+			lastY_ = downY_ = input.y;
+			pendingX_ = 0.0f;
+			pendingY_ = 0.0f;
+		}
+	}
+	if (input.id != dragPointerId_) {
+		return false;
+	}
+	if (input.flags & TouchInputFlags::MOVE) {
+		pendingX_ += input.x - lastX_;
+		pendingY_ += input.y - lastY_;
+		lastX_ = input.x;
+		lastY_ = input.y;
+
+		// Once the finger has left where it came down, it is a camera drag and sliding onto a
+		// button must not press it.
+		const float distance = sqrtf((input.x - downX_) * (input.x - downX_) + (input.y - downY_) * (input.y - downY_));
+		if (distance > 10.0f * g_display.dpi_scale_x) {
+			g_activeGesturePointers.insert(input.id);
+		}
+	}
+	if (input.flags & TouchInputFlags::UP) {
+		Release();
+	}
+	return true;
+}
+
+void CameraDragGamepad::Update() {
+	const double now = time_now_d();
+	float dt = lastUpdate_ > 0.0 ? (float)(now - lastUpdate_) : 1.0f / 60.0f;
+	lastUpdate_ = now;
+	dt = std::clamp(dt, 1.0f / 240.0f, 0.1f);
+
+	// The speed of the drag in screen heights per second, so that the same swipe turns the camera the
+	// same on a phone and a tablet. The stick follows it and stops with the finger.
+	const float height = std::max(bounds_.h, 1.0f);
+	const float vx = pendingX_ / height / dt;
+	const float vy = pendingY_ / height / dt;
+	pendingX_ = 0.0f;
+	pendingY_ = 0.0f;
+
+	const float gain = 0.7f * g_Config.fTouchCameraSensitivity;
+	float targetX = std::clamp(vx * gain, -1.0f, 1.0f);
+	float targetY = std::clamp(vy * gain, -1.0f, 1.0f);
+	if (g_Config.bTouchCameraInvertX)
+		targetX = -targetX;
+	if (g_Config.bTouchCameraInvertY)
+		targetY = -targetY;
+
+	// A little smoothing, so that a frame without a touch event does not drop the stick to zero and
+	// the game, which samples at its own rate, does not miss a short drag.
+	const float smoothing = 0.5f;
+	outX_ = outX_ * smoothing + targetX * (1.0f - smoothing);
+	outY_ = outY_ * smoothing + targetY * (1.0f - smoothing);
+	if (fabsf(outX_) < 0.02f && fabsf(outY_) < 0.02f) {
+		outX_ = 0.0f;
+		outY_ = 0.0f;
+	}
+
+	const bool moving = outX_ != 0.0f || outY_ != 0.0f;
+	if (!moving && !driving_) {
+		return;
+	}
+	driving_ = moving;
+	if (g_Config.bRightAnalogCustom) {
+		ApplyRightAnalogDeflection(outX_, outY_, moving);
+	} else {
+		__CtrlSetAnalogXY(1, outX_, -outY_);
+	}
 }
 
 GestureGamepad::~GestureGamepad() {

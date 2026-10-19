@@ -850,6 +850,19 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 		});
 		gesture->SetEnabledPtr(&g_Config.bShowTouchControls);
 
+		CheckBox *cameraDrag = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraDrag, co->T("Free screen camera drag")));
+		cameraDrag->SetEnabledPtr(&g_Config.bShowTouchControls);
+		controlsSettings->Add(new SettingHint(co->T("Free screen camera drag Tip", "Drag a finger over a free part of the screen to move the right analog stick. Turn on \"Right analog stick custom\" to map it to buttons or the left stick"), cameraDrag));
+		static const char *cameraZones[] = { "Whole screen", "Right half", "Left half" };
+		PopupMultiChoice *cameraZone = controlsSettings->Add(new PopupMultiChoice(&g_Config.iTouchCameraZone, co->T("Camera drag area"), cameraZones, 0, ARRAY_SIZE(cameraZones), I18NCat::CONTROLS, screenManager()));
+		cameraZone->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		PopupSliderChoiceFloat *cameraSens = controlsSettings->Add(new PopupSliderChoiceFloat(&g_Config.fTouchCameraSensitivity, 0.1f, 5.0f, 1.0f, co->T("Camera drag sensitivity"), 0.1f, screenManager(), "x"));
+		cameraSens->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvX = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertX, co->T("Invert camera drag horizontally")));
+		cameraInvX->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvY = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertY, co->T("Invert camera drag vertically")));
+		cameraInvY->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+
 		static const char *touchControlStyles[] = { "Classic", "Thin borders", "Glowing borders" };
 		View *style = controlsSettings->Add(new PopupMultiChoice(&g_Config.iTouchButtonStyle, co->T("Button style"), touchControlStyles, 0, ARRAY_SIZE(touchControlStyles), I18NCat::CONTROLS, screenManager()));
 		style->SetEnabledPtr(&g_Config.bShowTouchControls);

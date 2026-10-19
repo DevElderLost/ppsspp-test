@@ -317,6 +317,11 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("RightAnalogRight", SETTING(g_Config, iRightAnalogRight), 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogPress", SETTING(g_Config, iRightAnalogPress), 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogCustom", SETTING(g_Config, bRightAnalogCustom), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraDrag", SETTING(g_Config, bTouchCameraDrag), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraZone", SETTING(g_Config, iTouchCameraZone), 0, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraSensitivity", SETTING(g_Config, fTouchCameraSensitivity), 1.0f, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraInvertX", SETTING(g_Config, bTouchCameraInvertX), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraInvertY", SETTING(g_Config, bTouchCameraInvertY), false, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogDisableDiagonal", SETTING(g_Config, bRightAnalogDisableDiagonal), false, CfgFlag::PER_GAME),
 
 	ConfigSetting("TouchGliding", SETTING(g_Config, bTouchGliding), false, CfgFlag::PER_GAME),
@@ -1608,6 +1613,9 @@ void Config::PostLoadCleanup() {
 
 	// This caps the aniso level exponent to 4 (so 16x.). No hardware supports more anyway.
 	iAnisotropyLevel = std::clamp(iAnisotropyLevel, 0, 4);
+
+	iTouchCameraZone = std::clamp(iTouchCameraZone, 0, 2);
+	fTouchCameraSensitivity = std::clamp(fTouchCameraSensitivity, 0.1f, 5.0f);
 
 	iPlanarShadowQuality = std::clamp(iPlanarShadowQuality, 0, 2);
 	iPlanarShadowDistance = std::clamp(iPlanarShadowDistance, 0, 3);

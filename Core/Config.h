@@ -495,6 +495,14 @@ public:
 	int iRightAnalogRight;
 	int iRightAnalogPress;
 	bool bRightAnalogCustom;
+
+	// Free screen camera drag: a finger on a part of the screen that has no touch control moves the
+	// right analog stick, by how fast it drags (see CameraDragGamepad).
+	bool bTouchCameraDrag;
+	int iTouchCameraZone;  // 0 = whole free screen, 1 = right half, 2 = left half
+	float fTouchCameraSensitivity;
+	bool bTouchCameraInvertX;
+	bool bTouchCameraInvertY;
 	bool bRightAnalogDisableDiagonal;
 
 	// 0 for left, 1 for right
