@@ -33,6 +33,8 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
+#include "Core/ELF/ParamSFO.h"
+#include "Common/File/FileUtil.h"
 #include "Core/HW/Display.h"
 #include "GPU/Common/PostShader.h"
 #include "GPU/Common/ReshadeEffect.h"
@@ -406,6 +408,11 @@ void PresentationCommon::DestroyReshadePrograms() {
 		DoReleaseVector(rt.images);
 		DoReleaseVector(rt.targets);
 		DoReleaseVector(rt.samplers);
+		DoReleaseVector(rt.shadows);
+		DoRelease(rt.uiMask);
+		DoRelease(rt.composite);
+		DoRelease(rt.effectOutput);
+		DoRelease(rt.compositeSampler);
 		DoRelease(rt.backBuffers[0]);
 		DoRelease(rt.backBuffers[1]);
 	}
@@ -498,6 +505,21 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 		rt.targets.push_back(fb);
 	}
 
+	// Passes that read the texture they render into read a copy of it.
+	rt.shadows.assign(program->textures.size(), nullptr);
+	for (const ReshadePass &pass : program->passes) {
+		for (int slot = 0; slot < kReshadeMaxTextures; slot++) {
+			if (pass.slotKind[slot] != ReshadeSlot::RENDER_TARGET || !pass.selfRead[slot] || rt.shadows[pass.slotIndex[slot]])
+				continue;
+			const ReshadeTexture &t = program->textures[pass.slotIndex[slot]];
+			FramebufferDesc fd{ t.width, t.height, 1, 1, 0, false, "reshade_shadow" };
+			fd.colorFormat = t.format == ReshadeFormat::RGBA16F ? DataFormat::R16G16B16A16_FLOAT : DataFormat::R8G8B8A8_UNORM;
+			rt.shadows[pass.slotIndex[slot]] = draw_->CreateFramebuffer(fd);
+			if (!rt.shadows[pass.slotIndex[slot]])
+				return fail("couldn't create a framebuffer");
+		}
+	}
+
 	// Samplers: one per pass and slot, with the filtering and wrapping the shader declared.
 	auto wrapMode = [](int wrap) {
 		return wrap == 1 ? TextureAddressMode::REPEAT : wrap == 2 ? TextureAddressMode::REPEAT_MIRROR : TextureAddressMode::CLAMP_TO_EDGE;
@@ -568,6 +590,56 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 			return fail("couldn't create a framebuffer");
 	}
 
+	// UI protection: <Textures>/UIMask/<game id>.png, white where the HUD is. Games draw the HUD into the same
+	// framebuffer as the 3D scene, so depth of field and blurs smear it unless the effect result is masked.
+	{
+		const std::string gameId = g_paramSFO.GetDiscID();
+		const Path maskPath = GetReshadeTexturesDir() / "UIMask" / (gameId + ".png");
+		ReshadeImage mask;
+		if (!gameId.empty() && File::Exists(maskPath) && ReshadeLoadMask(maskPath.ToString(), &mask)) {
+			Draw::TextureDesc md{};
+			md.type = Draw::TextureType::LINEAR2D;
+			md.format = Draw::DataFormat::R8G8B8A8_UNORM;
+			md.width = mask.width;
+			md.height = mask.height;
+			md.depth = 1;
+			md.mipLevels = 1;
+			md.generateMips = false;
+			md.tag = "reshade_uimask";
+			md.initData.push_back(mask.rgba.data());
+			rt.uiMask = draw_->CreateTexture(md);
+
+			std::string vsSource, fsSource;
+			ReshadeCompositeShaders(target, glslVersion, &vsSource, &fsSource);
+			std::string vsErr, fsErr;
+			Draw::ShaderModule *cvs = CompileShaderModule(ShaderStage::Vertex, lang_, vsSource, &vsErr);
+			Draw::ShaderModule *cfs = CompileShaderModule(ShaderStage::Fragment, lang_, fsSource, &fsErr);
+			if (cvs && cfs) {
+				UniformBufferDesc compositeDesc{ 16, {} };
+				rt.composite = CreatePipeline({ cvs, cfs }, true, &compositeDesc);
+			}
+			if (cvs) cvs->Release();
+			if (cfs) cfs->Release();
+			SamplerStateDesc sd{};
+			sd.magFilter = TextureFilter::LINEAR;
+			sd.minFilter = TextureFilter::LINEAR;
+			sd.mipFilter = TextureFilter::NEAREST;
+			sd.maxAniso = 0.0f;
+			sd.wrapU = sd.wrapV = sd.wrapW = TextureAddressMode::CLAMP_TO_EDGE;
+			rt.compositeSampler = draw_->CreateSamplerState(sd);
+			rt.effectOutput = draw_->CreateFramebuffer({ nextWidth, nextHeight, 1, 1, 0, false, "reshade_effect_output" });
+			if (!rt.uiMask || !rt.composite || !rt.effectOutput || !rt.compositeSampler) {
+				DoRelease(rt.uiMask);
+				DoRelease(rt.composite);
+				DoRelease(rt.effectOutput);
+				DoRelease(rt.compositeSampler);
+				g_OSD.Show(OSDType::MESSAGE_WARNING, "UI mask for " + gameId + " could not be used");
+			} else {
+				INFO_LOG(Log::FrameBuf, "ReShade: UI mask %s", maskPath.c_str());
+			}
+		}
+	}
+
 	ShaderInfo info = *shaderInfo;
 	info.reshadeProgram = programIndex;
 	postShaderPipelines_.push_back(nullptr);
@@ -583,6 +655,8 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 	Draw::Framebuffer *input = postShaderOutput_;  // nullptr: the original source.
 	Draw::Framebuffer *backBuffer = input;
 	int writes = 0;
+	// With a UI mask the effect renders into its own framebuffer and a last pass blends the original UI back in.
+	Draw::Framebuffer *finalTarget = rt.composite ? rt.effectOutput : output;
 
 	std::vector<uint8_t> block(program.uniformBufferSize, 0);
 	ReshadeFillUniforms(program, rt.state, block.data());
@@ -593,7 +667,17 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 		if (pass.renderTarget >= 0) {
 			target = rt.targets[pass.renderTarget];
 		} else {
-			target = writes + 1 == program.backBufferWrites ? output : rt.backBuffers[writes & 1];
+			target = writes + 1 == program.backBufferWrites ? finalTarget : rt.backBuffers[writes & 1];
+		}
+
+		// Feedback: copy the texture before the pass renders into it, the pass reads the copy.
+		for (int slot = 0; slot < kReshadeMaxTextures; slot++) {
+			if (pass.slotKind[slot] == ReshadeSlot::RENDER_TARGET && pass.selfRead[slot]) {
+				const int idx = pass.slotIndex[slot];
+				int cw, ch;
+				draw_->GetFramebufferDimensions(rt.targets[idx], &cw, &ch);
+				draw_->CopyFramebufferImage(rt.targets[idx], 0, 0, 0, 0, rt.shadows[idx], 0, 0, 0, 0, cw, ch, 1, Aspect::COLOR_BIT, "ReShadeFeedback");
+			}
 		}
 
 		draw_->BindFramebufferAsRenderTarget(target, { pass.clear ? RPAction::CLEAR : RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShade");
@@ -620,7 +704,7 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 				draw_->BindTexture(slot, rt.images[pass.slotIndex[slot]]);
 				break;
 			case ReshadeSlot::RENDER_TARGET:
-				draw_->BindFramebufferAsTexture(rt.targets[pass.slotIndex[slot]], slot, Aspect::COLOR_BIT, 0);
+				draw_->BindFramebufferAsTexture(pass.selfRead[slot] ? rt.shadows[pass.slotIndex[slot]] : rt.targets[pass.slotIndex[slot]], slot, Aspect::COLOR_BIT, 0);
 				break;
 			case ReshadeSlot::NONE:
 				// Don't leave a texture from an earlier pass bound (it may be the render target of this one).
@@ -647,6 +731,28 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 			backBuffer = target;
 			writes++;
 		}
+	}
+	if (rt.composite) {
+		draw_->BindFramebufferAsRenderTarget(output, { RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShadeUIMask");
+		draw_->BindFramebufferAsTexture(rt.effectOutput, 0, Aspect::COLOR_BIT, 0);
+		if (input)
+			draw_->BindFramebufferAsTexture(input, 1, Aspect::COLOR_BIT, 0);
+		else
+			BindSource(1, false);
+		draw_->BindTexture(2, rt.uiMask);
+		for (int slot = 3; slot < kReshadeMaxTextures; slot++)
+			draw_->BindTexture(slot, nullptr);
+		for (int slot = 0; slot < 3; slot++)
+			draw_->BindSamplerStates(slot, 1, &rt.compositeSampler);
+		int ow, oh;
+		draw_->GetFramebufferDimensions(output, &ow, &oh);
+		draw_->SetViewport(Draw::Viewport{ 0, 0, (float)ow, (float)oh, 0.0f, 1.0f });
+		draw_->SetScissorRect(0, 0, ow, oh);
+		draw_->BindPipeline(rt.composite);
+		uint8_t dummy[16] = {};
+		draw_->UpdateDynamicUniformBuffer(dummy, sizeof(dummy));
+		draw_->BindVertexBuffer(vdata_, (int)sizeof(Vertex) * 4);
+		draw_->Draw(4, 0);
 	}
 }
 

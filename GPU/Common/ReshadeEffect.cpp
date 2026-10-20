@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -86,7 +87,7 @@ bool LoadImageFile(const std::string &textureDir, const std::string &fxDir, cons
 
 // Generates GLSL for one entry point. `samplerSlots` maps SPIR-V sampler binding -> texture slot (0..2).
 bool Generate(const std::vector<uint32_t> &spirv, const std::string &entry, spv::ExecutionModel model, ReshadeTarget target, int glslVersion,
-	const std::map<uint32_t, int> &samplerSlots, const std::vector<ReshadeUniform> &uniforms, std::string *out, std::string *error) {
+	const std::map<uint32_t, int> &samplerSlots, const std::vector<ReshadeUniform> &uniforms, std::string *out, std::string *error, int outputToLocation0 = -1) {
 	spirv_cross::CompilerGLSL compiler(spirv);
 	compiler.set_entry_point(entry, model);
 
@@ -148,16 +149,98 @@ bool Generate(const std::vector<uint32_t> &spirv, const std::string &entry, spv:
 		return false;
 	}
 
+	if (outputToLocation0 >= 0 && model == spv::ExecutionModelFragment) {
+		// A pass with several render targets runs once per target (PPSSPP framebuffers have one color attachment):
+		// the wanted output moves to location 0, the others make room for it and are ignored by the pipeline.
+		for (const auto &o : res.stage_outputs) {
+			const uint32_t loc = compiler.get_decoration(o.id, spv::DecorationLocation);
+			const uint32_t want = (int)loc == outputToLocation0 ? 0 : ((int)loc < outputToLocation0 ? loc + 1 : loc);
+			compiler.set_decoration(o.id, spv::DecorationLocation, want);
+		}
+	}
+
 	*out = compiler.compile();
+
+	if (target != ReshadeTarget::VULKAN) {
+		// GLSL ES 3 and GLSL 3.3 don't allow an empty last `case` / `default` body, and SPIRV-Cross writes `case 5: { }`
+		// for cases that just leave the switch.
+		static const char *const kLabels[] = { "case ", "default:" };
+		std::string &s = *out;
+		for (const char *label : kLabels) {
+			size_t pos = 0;
+			while ((pos = s.find(label, pos)) != std::string::npos) {
+				size_t colon = s.find(':', pos);
+				size_t open = colon == std::string::npos ? colon : s.find_first_not_of(" \t\r\n", colon + 1);
+				if (open != std::string::npos && s[open] == '{') {
+					size_t close = s.find_first_not_of(" \t\r\n", open + 1);
+					if (close != std::string::npos && s[close] == '}') {
+						s.insert(close, "break; ");
+						pos = close + 7;
+						continue;
+					}
+				}
+				pos = colon == std::string::npos ? pos + 1 : colon + 1;
+			}
+		}
+	}
 	return true;
 }
 
 }  // namespace
 
+// Shader packs that went through a zip made on Linux can contain symbolic links stored as small text files whose content
+// is the target path (`/home/x/reshade-shaders/Shaders/ReShade.fxh`). Replace those with an #include of the target's
+// file name, which is what the link meant, so `#include "Reshade.fxh"` finds the real header.
+static void FixSymlinkTextFiles(const std::string &dir) {
+	std::error_code ec;
+	for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+		if (!entry.is_regular_file(ec) || entry.file_size(ec) > 400 || entry.file_size(ec) < 4)
+			continue;
+		const std::string ext = entry.path().extension().string();
+		if (ext != ".fxh" && ext != ".fx" && ext != ".h")
+			continue;
+		FILE *f = fopen(entry.path().string().c_str(), "rb");
+		if (!f)
+			continue;
+		char buf[512];
+		size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+		fclose(f);
+		std::string text(buf, n);
+		while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
+			text.pop_back();
+		if (text.empty() || (text[0] != '/' && text[0] != '.') || text.find('\n') != std::string::npos || text.find("#") != std::string::npos)
+			continue;
+		const size_t slash = text.find_last_of("/\\");
+		const std::string target = slash == std::string::npos ? text : text.substr(slash + 1);
+		if (target.empty() || target == entry.path().filename().string())
+			continue;
+		const std::string replacement = "#pragma once\n#include \"" + target + "\"\n";
+		if (FILE *w = fopen(entry.path().string().c_str(), "wb")) {
+			fwrite(replacement.data(), 1, replacement.size(), w);
+			fclose(w);
+		}
+	}
+}
+
+bool ReshadeLoadMask(const std::string &path, ReshadeImage *out) {
+	int w = 0, h = 0, n = 0;
+	stbi_uc *px = stbi_load(path.c_str(), &w, &h, &n, 4);
+	if (!px)
+		return false;
+	out->width = w;
+	out->height = h;
+	out->rgba.assign(px, px + (size_t)w * h * 4);
+	stbi_image_free(px);
+	return true;
+}
+
 bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, const std::string &textureDir,
 	int width, int height, ReshadeTarget target, int glslVersion, ReshadeProgram *out) {
 	*out = ReshadeProgram();
 	const std::string fxDir = DirName(fxPath);
+	FixSymlinkTextFiles(includeDir);
+	if (fxDir != includeDir)
+		FixSymlinkTextFiles(fxDir);
 
 	reshadefx::preprocessor pp;
 	pp.add_macro_definition("__RESHADE__", "50100");
@@ -301,20 +384,19 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 
 	for (const reshadefx::pass_info *pi : list) {
 		ReshadePass pass;
-		if (!pi->render_target_names[1].empty()) {
-			out->error = "pass " + pi->ps_entry_point + " renders into several textures at once, which PPSSPP does not support";
-			return false;
-		}
-		if (!pi->render_target_names[0].empty()) {
-			auto rt = texInfo.find(pi->render_target_names[0]);
+		// Render targets of the pass. With several the pass is run once per target (see Generate).
+		std::vector<int> targets;
+		for (int k = 0; k < 8 && !pi->render_target_names[k].empty(); k++) {
+			auto rt = texInfo.find(pi->render_target_names[k]);
 			if (rt == texInfo.end() || rt->second.kind != Kind::RenderTarget) {
 				out->error = "pass " + pi->ps_entry_point + " has an unsupported render target";
 				return false;
 			}
-			pass.renderTarget = rt->second.index;
-		} else {
-			out->backBufferWrites++;
+			targets.push_back(rt->second.index);
 		}
+		if (targets.empty())
+			out->backBufferWrites++;
+		pass.renderTarget = targets.empty() ? -1 : targets[0];
 		pass.clear = pi->clear_render_targets;
 
 		// Which samplers do the vertex and pixel shader really use, and which texture slot does each get?
@@ -344,10 +426,7 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 						return false;
 					}
 					const TexInfo &ti = it->second;
-					if (ti.kind == Kind::RenderTarget && ti.index == pass.renderTarget) {
-						out->error = "pass " + pi->ps_entry_point + " reads the texture it renders into";
-						return false;
-					}
+					const bool readsItself = ti.kind == Kind::RenderTarget && std::find(targets.begin(), targets.end(), ti.index) != targets.end();
 					const std::pair<int, int> key = { (int)ti.kind, ti.index };
 					auto sl = slotOf.find(key);
 					int slot;
@@ -363,6 +442,7 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 						pass.slotKind[slot] = ti.kind == Kind::BackBuffer ? ReshadeSlot::BACK_BUFFER : ti.kind == Kind::Depth ? ReshadeSlot::DEPTH :
 							ti.kind == Kind::Image ? ReshadeSlot::IMAGE : ReshadeSlot::RENDER_TARGET;
 						pass.slotIndex[slot] = ti.index;
+						pass.selfRead[slot] = readsItself;
 						ReshadeSampler &ss = pass.slotSampler[slot];
 						const uint32_t f = (uint32_t)sinfo->filter;
 						ss.minLinear = (f & 0x10) != 0;
@@ -380,12 +460,20 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 		}
 
 		std::string error;
-		if (!Generate(mod.spirv, pi->vs_entry_point, spv::ExecutionModelVertex, target, glslVersion, samplerSlots, out->uniforms, &pass.vs, &error) ||
-			!Generate(mod.spirv, pi->ps_entry_point, spv::ExecutionModelFragment, target, glslVersion, samplerSlots, out->uniforms, &pass.fs, &error)) {
+		if (!Generate(mod.spirv, pi->vs_entry_point, spv::ExecutionModelVertex, target, glslVersion, samplerSlots, out->uniforms, &pass.vs, &error)) {
 			out->error = "SPIRV-Cross: " + error;
 			return false;
 		}
-		out->passes.push_back(std::move(pass));
+		const int variants = std::max<int>(1, (int)targets.size());
+		for (int k = 0; k < variants; k++) {
+			ReshadePass variant = pass;
+			variant.renderTarget = targets.empty() ? -1 : targets[k];
+			if (!Generate(mod.spirv, pi->ps_entry_point, spv::ExecutionModelFragment, target, glslVersion, samplerSlots, out->uniforms, &variant.fs, &error, targets.size() > 1 ? k : -1)) {
+				out->error = "SPIRV-Cross: " + error;
+				return false;
+			}
+			out->passes.push_back(std::move(variant));
+		}
 	}
 	if (out->backBufferWrites == 0) {
 		out->error = "the shader never writes the screen";
@@ -396,6 +484,47 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 		return false;
 	}
 	return true;
+}
+
+void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string *vs, std::string *fs) {
+	if (target == ReshadeTarget::VULKAN) {
+		*vs =
+			"#version 450\n"
+			"layout(location = 0) out vec2 vUv;\n"
+			"void main() {\n"
+			"  vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));\n"
+			"  vUv = uv;\n"
+			"  gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);\n"
+			"}\n";
+		*fs =
+			"#version 450\n"
+			"layout(location = 0) in vec2 vUv;\n"
+			"layout(location = 0) out vec4 outColor;\n"
+			"layout(set = 0, binding = 1) uniform sampler2D sampler0;\n"
+			"layout(set = 0, binding = 2) uniform sampler2D sampler1;\n"
+			"layout(set = 0, binding = 3) uniform sampler2D sampler2;\n"
+			"void main() {\n"
+			"  outColor = mix(texture(sampler0, vUv), texture(sampler1, vUv), texture(sampler2, vUv).r);\n"
+			"}\n";
+		return;
+	}
+	const std::string header = "#version " + std::to_string(glslVersion) + (target == ReshadeTarget::GLSL_ES3 ? " es\nprecision highp float;\n" : "\n");
+	*vs = header +
+		"out vec2 vUv;\n"
+		"void main() {\n"
+		"  vec2 uv = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+		"  vUv = uv;\n"
+		"  gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);\n"
+		"}\n";
+	*fs = header +
+		"in vec2 vUv;\n"
+		"out vec4 outColor;\n"
+		"uniform sampler2D sampler0;\n"
+		"uniform sampler2D sampler1;\n"
+		"uniform sampler2D sampler2;\n"
+		"void main() {\n"
+		"  outColor = mix(texture(sampler0, vUv), texture(sampler1, vUv), texture(sampler2, vUv).r);\n"
+		"}\n";
 }
 
 void ReshadeFillUniforms(const ReshadeProgram &prog, const ReshadeFrameState &state, uint8_t *buffer) {

@@ -119,6 +119,56 @@ reshadefx::preprocessor::~preprocessor()
 {
 }
 
+// Shaders written on Windows include files with a different letter case than the file has on disk, which only works on a
+// case insensitive file system. Resolve every path component ignoring case when the exact path doesn't exist.
+static bool exists_ignoring_case(std::filesystem::path &path)
+{
+	std::error_code ec;
+	if (std::filesystem::exists(path, ec))
+		return true;
+
+	auto lower = [](std::string s) { for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c))); return s; };
+
+	std::filesystem::path resolved = path.is_absolute() ? path.root_path() : std::filesystem::path();
+	for (const std::filesystem::path &part : path.relative_path())
+	{
+		std::filesystem::path next = resolved / part;
+		if (!std::filesystem::exists(next, ec))
+		{
+			bool found = false;
+			const std::string wanted = lower(part.u8string());
+			for (const auto &entry : std::filesystem::directory_iterator(resolved.empty() ? std::filesystem::path(".") : resolved, ec))
+			{
+				if (lower(entry.path().filename().u8string()) == wanted)
+				{
+					next = resolved / entry.path().filename();
+					found = true;
+					break;
+				}
+			}
+			if (!found)
+				return false;
+		}
+		resolved = next;
+	}
+	path = resolved;
+	return true;
+}
+
+// Looks for the included file next to the including one first, then in the include paths. Leaves file_path at the last
+// candidate when nothing is found, so the error message still names a file.
+static void resolve_include_path(std::filesystem::path &file_path, const std::filesystem::path &file_name, const std::vector<std::filesystem::path> &include_paths)
+{
+	if (exists_ignoring_case(file_path))
+		return;
+	for (const std::filesystem::path &include_path : include_paths)
+	{
+		file_path = include_path / file_name;
+		if (exists_ignoring_case(file_path))
+			return;
+	}
+}
+
 void reshadefx::preprocessor::add_include_path(const std::filesystem::path &path)
 {
 	assert(!path.empty());
@@ -656,10 +706,7 @@ void reshadefx::preprocessor::parse_include()
 	std::filesystem::path file_path = std::filesystem::u8path(_output_location.source);
 	file_path.replace_filename(file_name);
 
-	if (std::error_code ec; !std::filesystem::exists(file_path, ec))
-		for (const std::filesystem::path &include_path : _include_paths)
-			if (std::filesystem::exists(file_path = include_path / file_name, ec))
-				break;
+	resolve_include_path(file_path, file_name, _include_paths);
 
 	const std::string file_path_string = file_path.u8string();
 
@@ -863,10 +910,7 @@ bool reshadefx::preprocessor::evaluate_expression()
 				file_path.replace_filename(file_name);
 
 				std::error_code ec;
-				if (!std::filesystem::exists(file_path, ec))
-					for (const std::filesystem::path &include_path : _include_paths)
-						if (std::filesystem::exists(file_path = include_path / file_name, ec))
-							break;
+				resolve_include_path(file_path, file_name, _include_paths);
 
 				rpn[rpn_index++] = { std::filesystem::exists(file_path, ec) ? 1 : 0, false };
 				continue;

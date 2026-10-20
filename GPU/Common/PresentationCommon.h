@@ -184,7 +184,13 @@ protected:
 		std::vector<Draw::Texture *> images;           // textures loaded from files
 		std::vector<Draw::Framebuffer *> targets;      // the effect's render-target textures
 		Draw::Framebuffer *backBuffers[2] = {};        // back buffer copies between passes that write the screen
-		std::vector<Draw::SamplerState *> samplers;    // [pass * 3 + slot]
+		std::vector<Draw::SamplerState *> samplers;    // [pass * kReshadeMaxTextures + slot]
+		std::vector<Draw::Framebuffer *> shadows;      // copies for passes that read the texture they render into
+		// UI protection: where the per-game mask is white, the original image is put back over the effect.
+		Draw::Texture *uiMask = nullptr;
+		Draw::Pipeline *composite = nullptr;
+		Draw::Framebuffer *effectOutput = nullptr;
+		Draw::SamplerState *compositeSampler = nullptr;
 		double startTime = 0.0;
 		double lastTime = 0.0;
 		ReshadeFrameState state;

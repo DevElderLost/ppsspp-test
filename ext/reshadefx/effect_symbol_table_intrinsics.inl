@@ -1477,15 +1477,40 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Doffset, 0, {
 		code += "tex2D(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + " + " + id_to_name(args[2].base) + " * " + id_to_name(args[0].base) + ".pixelsize)";
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Doffset, 0, {
-	// Non-constant offset operand needs extended capability
-	if (!args[2].is_constant)
-		add_capability(spv::CapabilityImageGatherExtended);
+	if (args[2].is_constant)
+		return add_instruction(spv::OpImageSampleImplicitLod, convert_type(res_type))
+			.add(args[0].base)
+			.add(args[1].base)
+			.add(spv::ImageOperandsConstOffsetMask)
+			.add(args[2].base)
+			.result;
+
+	// Vulkan and GLSL ES only accept constant offsets on sampling instructions, so a run-time offset moves the
+	// coordinates by whole texels instead:  coords + offset / size
+	add_capability(spv::CapabilityImageQuery);
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+	const spv::Id size = add_instruction(spv::OpImageQuerySizeLod, convert_type({ type::t_int, 2, 1 }))
+		.add(image)
+		.add(emit_constant(0u))
+		.result;
+	const spv::Id size_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(size).result;
+	const spv::Id offset_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(args[2].base).result;
+	const spv::Id shift = add_instruction(spv::OpFDiv, convert_type({ type::t_float, 2, 1 }))
+		.add(offset_f)
+		.add(size_f)
+		.result;
+	const spv::Id coords = add_instruction(spv::OpFAdd, convert_type({ type::t_float, 2, 1 }))
+		.add(args[1].base)
+		.add(shift)
+		.result;
 
 	return add_instruction(spv::OpImageSampleImplicitLod, convert_type(res_type))
 		.add(args[0].base)
-		.add(args[1].base)
-		.add(args[2].is_constant ? spv::ImageOperandsConstOffsetMask : spv::ImageOperandsOffsetMask)
-		.add(args[2].base)
+		.add(coords)
+		.add(spv::ImageOperandsMaskNone)
 		.result;
 	})
 
@@ -1536,9 +1561,6 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Dlodoffset, 0, {
 		code += "tex2Dlod(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + " + float4(" + id_to_name(args[2].base) + " * " + id_to_name(args[0].base) + ".pixelsize, 0, 0))";
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Dlodoffset, 0, {
-	if (!args[2].is_constant)
-		add_capability(spv::CapabilityImageGatherExtended);
-
 	const spv::Id xy = add_instruction(spv::OpVectorShuffle, convert_type({ type::t_float, 2, 1 }))
 		.add(args[1].base)
 		.add(args[1].base)
@@ -1550,12 +1572,44 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dlodoffset, 0, {
 		.add(3) // .w
 		.result;
 
+	if (args[2].is_constant)
+		return add_instruction(spv::OpImageSampleExplicitLod, convert_type(res_type))
+			.add(args[0].base)
+			.add(xy)
+			.add(spv::ImageOperandsLodMask | spv::ImageOperandsConstOffsetMask)
+			.add(lod)
+			.add(args[2].base)
+			.result;
+
+	// Run-time offsets aren't allowed on sampling instructions in Vulkan and GLSL ES: move the coordinates by whole
+	// texels of the sampled mip level instead.
+	add_capability(spv::CapabilityImageQuery);
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+	const spv::Id lod_i = add_instruction(spv::OpConvertFToS, convert_type({ type::t_int, 1, 1 }))
+		.add(lod).result;
+	const spv::Id size = add_instruction(spv::OpImageQuerySizeLod, convert_type({ type::t_int, 2, 1 }))
+		.add(image)
+		.add(lod_i)
+		.result;
+	const spv::Id size_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(size).result;
+	const spv::Id offset_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(args[2].base).result;
+	const spv::Id shift = add_instruction(spv::OpFDiv, convert_type({ type::t_float, 2, 1 }))
+		.add(offset_f)
+		.add(size_f)
+		.result;
+	const spv::Id coords = add_instruction(spv::OpFAdd, convert_type({ type::t_float, 2, 1 }))
+		.add(xy)
+		.add(shift)
+		.result;
+
 	return add_instruction(spv::OpImageSampleExplicitLod, convert_type(res_type))
 		.add(args[0].base)
-		.add(xy)
-		.add(spv::ImageOperandsLodMask | (args[2].is_constant ? spv::ImageOperandsConstOffsetMask : spv::ImageOperandsOffsetMask))
+		.add(coords)
+		.add(spv::ImageOperandsLodMask)
 		.add(lod)
-		.add(args[2].base)
 		.result;
 	})
 
@@ -1646,6 +1700,134 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 0, {
 		.add(xy)
 		.add(spv::ImageOperandsLodMask)
 		.add(lod)
+		.result;
+	})
+
+// ret tex2D(s, coords, offset)  (some shaders use the offset as a third argument of tex2D)
+DEFINE_INTRINSIC(tex2D, 1, float4, sampler, float2, int2)
+IMPLEMENT_INTRINSIC_SPIRV(tex2D, 1, {
+	add_capability(spv::CapabilityImageQuery);
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+	const spv::Id size = add_instruction(spv::OpImageQuerySizeLod, convert_type({ type::t_int, 2, 1 }))
+		.add(image)
+		.add(emit_constant(0u))
+		.result;
+	const spv::Id size_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(size).result;
+	const spv::Id offset_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(args[2].base).result;
+	const spv::Id shift = add_instruction(spv::OpFDiv, convert_type({ type::t_float, 2, 1 }))
+		.add(offset_f)
+		.add(size_f)
+		.result;
+	const spv::Id coords = add_instruction(spv::OpFAdd, convert_type({ type::t_float, 2, 1 }))
+		.add(args[1].base)
+		.add(shift)
+		.result;
+
+	return add_instruction(spv::OpImageSampleImplicitLod, convert_type(res_type))
+		.add(args[0].base)
+		.add(coords)
+		.add(spv::ImageOperandsMaskNone)
+		.result;
+	})
+
+// ret tex2Dlod(s, coords, offset)  (the overload newer ReShade versions have next to tex2Dlodoffset)
+DEFINE_INTRINSIC(tex2Dlod, 1, float4, sampler, float4, int2)
+IMPLEMENT_INTRINSIC_SPIRV(tex2Dlod, 1, {
+	const spv::Id xy = add_instruction(spv::OpVectorShuffle, convert_type({ type::t_float, 2, 1 }))
+		.add(args[1].base)
+		.add(args[1].base)
+		.add(0) // .x
+		.add(1) // .y
+		.result;
+	const spv::Id lod = add_instruction(spv::OpCompositeExtract, convert_type({ type::t_float, 1, 1 }))
+		.add(args[1].base)
+		.add(3) // .w
+		.result;
+
+	if (args[2].is_constant)
+		return add_instruction(spv::OpImageSampleExplicitLod, convert_type(res_type))
+			.add(args[0].base)
+			.add(xy)
+			.add(spv::ImageOperandsLodMask | spv::ImageOperandsConstOffsetMask)
+			.add(lod)
+			.add(args[2].base)
+			.result;
+
+	// Run-time offsets aren't allowed on sampling instructions in Vulkan and GLSL ES: move the coordinates by whole
+	// texels of the sampled mip level instead.
+	add_capability(spv::CapabilityImageQuery);
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+	const spv::Id lod_i = add_instruction(spv::OpConvertFToS, convert_type({ type::t_int, 1, 1 }))
+		.add(lod).result;
+	const spv::Id size = add_instruction(spv::OpImageQuerySizeLod, convert_type({ type::t_int, 2, 1 }))
+		.add(image)
+		.add(lod_i)
+		.result;
+	const spv::Id size_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(size).result;
+	const spv::Id offset_f = add_instruction(spv::OpConvertSToF, convert_type({ type::t_float, 2, 1 }))
+		.add(args[2].base).result;
+	const spv::Id shift = add_instruction(spv::OpFDiv, convert_type({ type::t_float, 2, 1 }))
+		.add(offset_f)
+		.add(size_f)
+		.result;
+	const spv::Id coords = add_instruction(spv::OpFAdd, convert_type({ type::t_float, 2, 1 }))
+		.add(xy)
+		.add(shift)
+		.result;
+
+	return add_instruction(spv::OpImageSampleExplicitLod, convert_type(res_type))
+		.add(args[0].base)
+		.add(coords)
+		.add(spv::ImageOperandsLodMask)
+		.add(lod)
+		.result;
+	})
+
+// ret tex2Dfetch(s, coords) and tex2Dfetch(s, coords, lod)  (newer ReShade: int2 coordinates)
+DEFINE_INTRINSIC(tex2Dfetch, 1, float4, sampler, int2)
+IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 1, {
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+
+	return add_instruction(spv::OpImageFetch, convert_type(res_type))
+		.add(image)
+		.add(args[1].base)
+		.add(spv::ImageOperandsLodMask)
+		.add(emit_constant(0))
+		.result;
+	})
+DEFINE_INTRINSIC(tex2Dfetch, 3, float4, sampler, int)
+IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 3, {
+	// A single coordinate: x, with y = 0 (reading 1 x 1 textures)
+	const spv::Id xy = add_instruction(spv::OpCompositeConstruct, convert_type({ type::t_int, 2, 1 }))
+		.add(args[1].base)
+		.add(emit_constant(0))
+		.result;
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+
+	return add_instruction(spv::OpImageFetch, convert_type(res_type))
+		.add(image)
+		.add(xy)
+		.add(spv::ImageOperandsLodMask)
+		.add(emit_constant(0))
+		.result;
+	})
+DEFINE_INTRINSIC(tex2Dfetch, 2, float4, sampler, int2, int)
+IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 2, {
+	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
+		.add(args[0].base).result;
+
+	return add_instruction(spv::OpImageFetch, convert_type(res_type))
+		.add(image)
+		.add(args[1].base)
+		.add(spv::ImageOperandsLodMask)
+		.add(args[2].base)
 		.result;
 	})
 

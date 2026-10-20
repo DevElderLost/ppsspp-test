@@ -90,6 +90,8 @@ struct ReshadePass {
 			slotIndex[i] = -1;
 		}
 	}
+	// The pass reads the texture it renders into (a feedback pass): the slot has to see a copy made before the pass.
+	bool selfRead[kReshadeMaxTextures] = {};
 	int renderTarget = -1;  // index into ReshadeProgram::textures, -1 = writes the (next) back buffer
 	bool clear = false;     // ClearRenderTargets
 };
@@ -116,6 +118,13 @@ struct ReshadeFrameState {
 // ES 3.0, 330 for desktop). Blocking and slow-ish (it parses the whole shader), call it when the effect is chosen.
 bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, const std::string &textureDir,
 	int width, int height, ReshadeTarget target, int glslVersion, ReshadeProgram *out);
+
+// Vertex and fragment shader of the pass that puts the original image back where the UI mask is white:
+//   out = mix(effect (texture slot 0), original (slot 1), mask.r (slot 2))
+void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string *vs, std::string *fs);
+
+// Loads a PNG/JPG/BMP/TGA as RGBA8 at its own size (the UI mask, see PresentationCommon).
+bool ReshadeLoadMask(const std::string &path, ReshadeImage *out);
 
 // Fills the uniform block (prog.uniformBufferSize bytes) for the current frame.
 void ReshadeFillUniforms(const ReshadeProgram &prog, const ReshadeFrameState &state, uint8_t *buffer);
