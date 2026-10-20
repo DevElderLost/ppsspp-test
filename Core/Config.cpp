@@ -756,6 +756,8 @@ static const ConfigSetting graphicsSettings[] = {
 	ConfigSetting("PlanarShadowDirX", SETTING(g_Config, iPlanarShadowDirX), 45, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowDirZ", SETTING(g_Config, iPlanarShadowDirZ), 30, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowHideOriginal", SETTING(g_Config, bPlanarShadowHideOriginal), true, CfgFlag::PER_GAME),
+	ConfigSetting("ReshadeScale", SETTING(g_Config, iReshadeScale), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ReshadeAutoUI", SETTING(g_Config, bReshadeAutoUI), true, CfgFlag::PER_GAME),
 
 	ConfigSetting("VertexDecJit", SETTING(g_Config, bVertexDecoderJit), &DefaultCodeGen, CfgFlag::DONT_SAVE | CfgFlag::REPORT),
 

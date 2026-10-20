@@ -119,9 +119,11 @@ struct ReshadeFrameState {
 bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, const std::string &textureDir,
 	int width, int height, ReshadeTarget target, int glslVersion, ReshadeProgram *out);
 
-// Vertex and fragment shader of the pass that puts the original image back where the UI mask is white:
-//   out = mix(effect (texture slot 0), original (slot 1), mask.r (slot 2))
-void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string *vs, std::string *fs);
+// Vertex and fragment shader of the pass that puts the effect result on the screen. Slot 0 is the effect result.
+//   mode 0: out = mix(effect, original (slot 1), mask.r (slot 2))              a per-game UI mask picture
+//   mode 1: out = mix(effect, final (slot 1), changed(final, scene (slot 2)))  pixels the HUD changed after the scene
+//   mode 2: out = effect                                                       just scales the result up
+void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, int mode, std::string *vs, std::string *fs);
 
 // Loads a PNG/JPG/BMP/TGA as RGBA8 at its own size (the UI mask, see PresentationCommon).
 bool ReshadeLoadMask(const std::string &path, ReshadeImage *out);

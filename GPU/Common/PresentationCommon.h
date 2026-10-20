@@ -135,7 +135,8 @@ public:
 	// One of these must be called every frame.
 	void SourceBlank();
 	void SourceTexture(Draw::Texture *texture, int bufferWidth, int bufferHeight);
-	void SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight);
+	// scene: snapshot of the 3D scene before the HUD was drawn (see FramebufferManagerCommon::CaptureUIScene), or null.
+	void SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight, Draw::Framebuffer *scene = nullptr);
 
 	void RunPostshaderPasses(const DisplayLayoutConfig &config, OutputFlags flags, int uvRotation, float u0, float v0, float u1, float v1);
 	void CopyToOutput(const DisplayLayoutConfig &config);
@@ -188,7 +189,7 @@ protected:
 		std::vector<Draw::Framebuffer *> shadows;      // copies for passes that read the texture they render into
 		// UI protection: where the per-game mask is white, the original image is put back over the effect.
 		Draw::Texture *uiMask = nullptr;
-		Draw::Pipeline *composite = nullptr;
+		Draw::Pipeline *composite[3] = {};  // see ReshadeCompositeShaders
 		Draw::Framebuffer *effectOutput = nullptr;
 		Draw::SamplerState *compositeSampler = nullptr;
 		double startTime = 0.0;
@@ -207,6 +208,7 @@ protected:
 
 	Draw::Texture *srcTexture_ = nullptr;
 	Draw::Framebuffer *srcFramebuffer_ = nullptr;
+	Draw::Framebuffer *srcSceneFramebuffer_ = nullptr;  // HUD-free snapshot of srcFramebuffer_, when there is one
 	int srcWidth_ = 0;
 	int srcHeight_ = 0;
 	bool hasVideo_ = false;

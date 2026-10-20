@@ -356,6 +356,9 @@ public:
 	int iPlanarShadowDirX;      // Hundredths of a world unit per unit of height, -200 - 200
 	int iPlanarShadowDirZ;      // Same, for the Z axis.
 	bool bPlanarShadowHideOriginal;  // Skip the game's own round blob shadows (Monster Hunter Portable 3rd signature).
+	// ReShade effects: resolution they run at (percent of the render size) and UI protection from a scene snapshot.
+	int iReshadeScale;
+	bool bReshadeAutoUI;
 	int iMultiSampleLevel;
 	int bHighQualityDepth;
 	bool bReplaceTextures;

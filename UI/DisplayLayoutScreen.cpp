@@ -358,6 +358,26 @@ void DisplayLayoutScreen::CreateViews() {
 
 	leftColumn->Add(new ItemHeader(gr->T("Postprocessing shaders")));
 
+	// ReShade effects: resolution and HUD protection.
+	{
+		static const char *scaleNames[] = { "100%", "75%", "50%", "33%", "25%" };
+		static const int scaleValues[] = { 100, 75, 50, 33, 25 };
+		reshadeScaleIndex_ = 0;
+		for (int i = 0; i < 5; i++)
+			if (g_Config.iReshadeScale == scaleValues[i])
+				reshadeScaleIndex_ = i;
+		auto *scaleChoice = leftColumn->Add(new PopupMultiChoice(&reshadeScaleIndex_, gr->T("ReShade effect resolution"), scaleNames, 0, ARRAY_SIZE(scaleNames), I18NCat::NONE, screenManager()));
+		scaleChoice->OnChoice.Add([this](UI::EventParams &e) {
+			static const int values[] = { 100, 75, 50, 33, 25 };
+			g_Config.iReshadeScale = values[std::clamp(reshadeScaleIndex_, 0, 4)];
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		});
+		auto *autoUI = leftColumn->Add(new CheckBox(&g_Config.bReshadeAutoUI, gr->T("ReShade: keep the HUD sharp (auto-detect)")));
+		autoUI->OnClick.Add([](UI::EventParams &e) {
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		});
+	}
+
 	// ReShade FX shaders (.fx, or a zip with a shader pack) are listed with the other post-processing shaders once imported.
 	leftColumn->Add(new Choice(gr->T("Import ReShade shaders...")))->OnClick.Add([this](UI::EventParams &e) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);

@@ -282,6 +282,14 @@ void LoadPostShaderInfo(Draw::DrawContext *draw, const std::vector<Path> &direct
 	}
 }
 
+bool ReshadeInChain() {
+	for (const std::string &name : g_Config.vPostShaderNames) {
+		if (name.rfind("reshade/", 0) == 0)
+			return true;
+	}
+	return false;
+}
+
 Path GetReshadeShadersDir() {
 	return g_Config.internalDataDirectory / "reshade" / "Shaders";
 }

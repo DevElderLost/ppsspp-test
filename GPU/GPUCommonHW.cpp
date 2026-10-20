@@ -14,6 +14,7 @@
 #include "Core/Util/PPGeDraw.h"
 
 #include "GPU/GPUCommonHW.h"
+#include "GPU/Common/PostShader.h"
 #include "GPU/Common/SplineCommon.h"
 #include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/TextureCacheCommon.h"
@@ -814,11 +815,34 @@ void GPUCommonHW::ShadowInject(u32 target) {
 	shadowInjecting_ = false;
 }
 
+void GPUCommonHW::UiCaptureBeforePrim(VirtualFramebuffer *vfb) {
+	if (shadowInjecting_)
+		return;
+	// A new frame of drawing into this framebuffer makes the old snapshot stale.
+	if (vfb->uiDrawSerial != uiSerial_) {
+		vfb->uiDrawSerial = uiSerial_;
+		vfb->uiSceneValid = false;
+		vfb->uiSawScene = false;
+	}
+	if (gstate.isModeClear())
+		return;
+	if (!gstate.isModeThrough()) {
+		vfb->uiSawScene = true;
+		return;
+	}
+	// The first 2D draw after 3D drawing: whatever is drawn from here on is HUD, as far as the effect is concerned.
+	if (vfb->uiSawScene && !vfb->uiSceneValid) {
+		drawEngineCommon_->Flush();
+		framebufferManager_->CaptureUIScene(vfb);
+	}
+}
+
 void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) {
 	drawEngineCommon_->FlushQueuedDepth();
 	// Flush anything left over.
 	drawEngineCommon_->Flush();
 	ShadowEndFrame();
+	uiCapture_ = g_Config.bReshadeAutoUI && ReshadeInChain() && !g_Config.bSoftwareRendering;
 
 	// after this, render pass is active.
 	framebufferManager_->PrepareCopyDisplayToOutput(config, curFramebufferDirty_);
@@ -827,6 +851,7 @@ void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) 
 void GPUCommonHW::CopyDisplayToOutput(const DisplayLayoutConfig &config) {
 	framebufferManager_->CopyDisplayToOutput(config);
 	curFramebufferDirty_ = false;
+	uiSerial_++;
 }
 
 bool GPUCommonHW::PresentedThisFrame() const {
@@ -1259,6 +1284,9 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	const bool shadowsActive = planarShadows_.Options().enabled;
 	if (shadowsActive) {
 		ShadowBeforePrim();
+	}
+	if (uiCapture_) {
+		UiCaptureBeforePrim(vfb);
 	}
 
 	CheckDepthUsage(vfb);

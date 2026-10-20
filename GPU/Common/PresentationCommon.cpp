@@ -410,7 +410,8 @@ void PresentationCommon::DestroyReshadePrograms() {
 		DoReleaseVector(rt.samplers);
 		DoReleaseVector(rt.shadows);
 		DoRelease(rt.uiMask);
-		DoRelease(rt.composite);
+		for (Draw::Pipeline *&p : rt.composite)
+			DoRelease(p);
 		DoRelease(rt.effectOutput);
 		DoRelease(rt.compositeSampler);
 		DoRelease(rt.backBuffers[0]);
@@ -452,9 +453,16 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 		height = 272;
 	}
 
+	// The effect can run at a fraction of the render resolution (a lot less work for blurs); a last pass scales the
+	// result up and, with UI protection, puts the sharp HUD back over it.
+	const int scalePercent = std::clamp(g_Config.iReshadeScale, 25, 100);
+	const int effectWidth = scalePercent >= 100 ? width : std::max(64, width * scalePercent / 100);
+	const int effectHeight = scalePercent >= 100 ? height : std::max(64, height * scalePercent / 100);
+	const bool scaled = effectWidth != width || effectHeight != height;
+
 	auto program = std::make_shared<ReshadeProgram>();
 	const std::string fxPath = shaderInfo->reshadeFile.ToString();
-	if (!ReshadeCompile(fxPath, GetReshadeShadersDir().ToString(), GetReshadeTexturesDir().ToString(), width, height, target, glslVersion, program.get())) {
+	if (!ReshadeCompile(fxPath, GetReshadeShadersDir().ToString(), GetReshadeTexturesDir().ToString(), effectWidth, effectHeight, target, glslVersion, program.get())) {
 		ERROR_LOG(Log::FrameBuf, "ReShade shader %s: %s", fxPath.c_str(), program->error.c_str());
 		ShowPostShaderError(shaderInfo->name + ": " + program->error);
 		return false;
@@ -585,13 +593,14 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 
 	// Intermediate back buffers, for shaders that write the screen more than once. Same size as the output.
 	for (int i = 0; i < 2 && program->backBufferWrites > i + 1; i++) {
-		rt.backBuffers[i] = draw_->CreateFramebuffer({ nextWidth, nextHeight, 1, 1, 0, false, "reshade_backbuffer" });
+		rt.backBuffers[i] = draw_->CreateFramebuffer({ effectWidth, effectHeight, 1, 1, 0, false, "reshade_backbuffer" });
 		if (!rt.backBuffers[i])
 			return fail("couldn't create a framebuffer");
 	}
 
-	// UI protection: <Textures>/UIMask/<game id>.png, white where the HUD is. Games draw the HUD into the same
-	// framebuffer as the 3D scene, so depth of field and blurs smear it unless the effect result is masked.
+	// How the result reaches the screen (ReshadeCompositeShaders): the HUD has to stay sharp and untouched, and a
+	// scaled effect has to be scaled up. Modes: 1 = automatic, from the scene snapshot; 0 = per-game mask picture
+	// <Textures>/UIMask/<game id>.png (white = HUD); 2 = just scale up.
 	{
 		const std::string gameId = g_paramSFO.GetDiscID();
 		const Path maskPath = GetReshadeTexturesDir() / "UIMask" / (gameId + ".png");
@@ -608,18 +617,26 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 			md.tag = "reshade_uimask";
 			md.initData.push_back(mask.rgba.data());
 			rt.uiMask = draw_->CreateTexture(md);
+		}
+		const bool wanted[3] = { rt.uiMask != nullptr, g_Config.bReshadeAutoUI, scaled };
 
-			std::string vsSource, fsSource;
-			ReshadeCompositeShaders(target, glslVersion, &vsSource, &fsSource);
-			std::string vsErr, fsErr;
+		bool ok = true;
+		for (int mode = 0; mode < 3 && ok; mode++) {
+			if (!wanted[mode])
+				continue;
+			std::string vsSource, fsSource, vsErr, fsErr;
+			ReshadeCompositeShaders(target, glslVersion, mode, &vsSource, &fsSource);
 			Draw::ShaderModule *cvs = CompileShaderModule(ShaderStage::Vertex, lang_, vsSource, &vsErr);
 			Draw::ShaderModule *cfs = CompileShaderModule(ShaderStage::Fragment, lang_, fsSource, &fsErr);
 			if (cvs && cfs) {
 				UniformBufferDesc compositeDesc{ 16, {} };
-				rt.composite = CreatePipeline({ cvs, cfs }, true, &compositeDesc);
+				rt.composite[mode] = CreatePipeline({ cvs, cfs }, true, &compositeDesc);
 			}
 			if (cvs) cvs->Release();
 			if (cfs) cfs->Release();
+			ok = rt.composite[mode] != nullptr;
+		}
+		if (rt.composite[0] || rt.composite[1] || rt.composite[2]) {
 			SamplerStateDesc sd{};
 			sd.magFilter = TextureFilter::LINEAR;
 			sd.minFilter = TextureFilter::LINEAR;
@@ -627,16 +644,18 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 			sd.maxAniso = 0.0f;
 			sd.wrapU = sd.wrapV = sd.wrapW = TextureAddressMode::CLAMP_TO_EDGE;
 			rt.compositeSampler = draw_->CreateSamplerState(sd);
-			rt.effectOutput = draw_->CreateFramebuffer({ nextWidth, nextHeight, 1, 1, 0, false, "reshade_effect_output" });
-			if (!rt.uiMask || !rt.composite || !rt.effectOutput || !rt.compositeSampler) {
-				DoRelease(rt.uiMask);
-				DoRelease(rt.composite);
-				DoRelease(rt.effectOutput);
-				DoRelease(rt.compositeSampler);
-				g_OSD.Show(OSDType::MESSAGE_WARNING, "UI mask for " + gameId + " could not be used");
-			} else {
-				INFO_LOG(Log::FrameBuf, "ReShade: UI mask %s", maskPath.c_str());
-			}
+			rt.effectOutput = draw_->CreateFramebuffer({ effectWidth, effectHeight, 1, 1, 0, false, "reshade_effect_output" });
+			ok = ok && rt.compositeSampler && rt.effectOutput;
+		}
+		if (!ok) {
+			for (Draw::Pipeline *&p : rt.composite)
+				DoRelease(p);
+			DoRelease(rt.uiMask);
+			DoRelease(rt.effectOutput);
+			DoRelease(rt.compositeSampler);
+			if (scaled)
+				return fail("couldn't set up the reduced resolution output");
+			g_OSD.Show(OSDType::MESSAGE_WARNING, shaderInfo->name + ": UI protection could not be set up");
 		}
 	}
 
@@ -652,11 +671,15 @@ bool PresentationCommon::BuildReshadeShader(const DisplayLayoutConfig &config, c
 void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer *output, bool useNearest) {
 	using namespace Draw;
 	const ReshadeProgram &program = *rt.program;
-	Draw::Framebuffer *input = postShaderOutput_;  // nullptr: the original source.
+	// With a scene snapshot (first effect of the chain) the effect works on the 3D scene alone, depth included; the
+	// last pass then puts back every pixel the HUD changed. Without one: a UI mask picture, or just the effect.
+	Draw::Framebuffer *scene = (!postShaderOutput_ && srcSceneFramebuffer_ && rt.composite[1]) ? srcSceneFramebuffer_ : nullptr;
+	const int compositeMode = scene ? 1 : (rt.composite[0] ? 0 : (rt.composite[2] ? 2 : -1));
+	Draw::Framebuffer *input = scene ? scene : postShaderOutput_;  // nullptr: the original source.
 	Draw::Framebuffer *backBuffer = input;
 	int writes = 0;
-	// With a UI mask the effect renders into its own framebuffer and a last pass blends the original UI back in.
-	Draw::Framebuffer *finalTarget = rt.composite ? rt.effectOutput : output;
+	Draw::Framebuffer *finalTarget = compositeMode >= 0 ? rt.effectOutput : output;
+	Draw::Framebuffer *depthSource = scene ? scene : srcFramebuffer_;
 
 	std::vector<uint8_t> block(program.uniformBufferSize, 0);
 	ReshadeFillUniforms(program, rt.state, block.data());
@@ -693,8 +716,8 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 			case ReshadeSlot::DEPTH:
 				// The depth buffer of the displayed framebuffer. Without one (software rendering, or a framebuffer
 				// without depth) the shader gets the colors, like vkBasalt does.
-				if (srcFramebuffer_ && draw_->FramebufferHasDepth(srcFramebuffer_))
-					draw_->BindFramebufferAsTexture(srcFramebuffer_, slot, Aspect::DEPTH_BIT, 0);
+				if (depthSource && draw_->FramebufferHasDepth(depthSource))
+					draw_->BindFramebufferAsTexture(depthSource, slot, Aspect::DEPTH_BIT, 0);
 				else if (backBuffer)
 					draw_->BindFramebufferAsTexture(backBuffer, slot, Aspect::COLOR_BIT, 0);
 				else
@@ -732,14 +755,22 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 			writes++;
 		}
 	}
-	if (rt.composite) {
-		draw_->BindFramebufferAsRenderTarget(output, { RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShadeUIMask");
+	if (compositeMode >= 0) {
+		draw_->BindFramebufferAsRenderTarget(output, { RPAction::DONT_CARE, RPAction::DONT_CARE, RPAction::DONT_CARE }, "ReShadeComposite");
 		draw_->BindFramebufferAsTexture(rt.effectOutput, 0, Aspect::COLOR_BIT, 0);
-		if (input)
-			draw_->BindFramebufferAsTexture(input, 1, Aspect::COLOR_BIT, 0);
-		else
-			BindSource(1, false);
-		draw_->BindTexture(2, rt.uiMask);
+		if (compositeMode == 1) {
+			draw_->BindFramebufferAsTexture(srcFramebuffer_, 1, Aspect::COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(scene, 2, Aspect::COLOR_BIT, 0);
+		} else if (compositeMode == 0) {
+			if (input)
+				draw_->BindFramebufferAsTexture(input, 1, Aspect::COLOR_BIT, 0);
+			else
+				BindSource(1, false);
+			draw_->BindTexture(2, rt.uiMask);
+		} else {
+			draw_->BindFramebufferAsTexture(rt.effectOutput, 1, Aspect::COLOR_BIT, 0);
+			draw_->BindFramebufferAsTexture(rt.effectOutput, 2, Aspect::COLOR_BIT, 0);
+		}
 		for (int slot = 3; slot < kReshadeMaxTextures; slot++)
 			draw_->BindTexture(slot, nullptr);
 		for (int slot = 0; slot < 3; slot++)
@@ -748,7 +779,7 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 		draw_->GetFramebufferDimensions(output, &ow, &oh);
 		draw_->SetViewport(Draw::Viewport{ 0, 0, (float)ow, (float)oh, 0.0f, 1.0f });
 		draw_->SetScissorRect(0, 0, ow, oh);
-		draw_->BindPipeline(rt.composite);
+		draw_->BindPipeline(rt.composite[compositeMode]);
 		uint8_t dummy[16] = {};
 		draw_->UpdateDynamicUniformBuffer(dummy, sizeof(dummy));
 		draw_->BindVertexBuffer(vdata_, (int)sizeof(Vertex) * 4);
@@ -999,13 +1030,17 @@ void PresentationCommon::SourceTexture(Draw::Texture *texture, int bufferWidth, 
 	srcHeight_ = bufferHeight;
 }
 
-void PresentationCommon::SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight) {
+void PresentationCommon::SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight, Draw::Framebuffer *scene) {
 	fb->AddRef();
+	if (scene)
+		scene->AddRef();
 
 	DoRelease(srcTexture_);
 	DoRelease(srcFramebuffer_);
+	DoRelease(srcSceneFramebuffer_);
 
 	srcFramebuffer_ = fb;
+	srcSceneFramebuffer_ = scene;
 	srcWidth_ = bufferWidth;
 	srcHeight_ = bufferHeight;
 }

@@ -121,6 +121,8 @@ void ReloadAllPostShaderInfo(Draw::DrawContext *draw);
 // ReShade FX shaders live in <internal data>/reshade/Shaders (.fx, .fxh) and .../Textures (images that `source`
 // annotations point at), the same layout ReShade uses. Everything with an .fx extension in Shaders shows up in the
 // post-processing shader list as "<name> (ReShade)".
+// True when one of the selected post-processing shaders is a ReShade effect.
+bool ReshadeInChain();
 Path GetReshadeShadersDir();
 Path GetReshadeTexturesDir();
 // Imports a .fx / .fxh file, a texture image, or a zip with a shader pack (Shaders/ and Textures/ folders, or loose

@@ -977,6 +977,30 @@ Draw2DPipeline *FramebufferManagerCommon::GetReinterpretPipeline(GEBufferFormat 
 	return pipeline;
 }
 
+void FramebufferManagerCommon::CaptureUIScene(VirtualFramebuffer *vfb) {
+	// MSAA framebuffers can't be copied like this, those games just don't get the protection.
+	if (!vfb->fbo || msaaLevel_ > 0)
+		return;
+	if (vfb->uiScene) {
+		int w, h;
+		draw_->GetFramebufferDimensions(vfb->uiScene, &w, &h);
+		if (w != vfb->renderWidth || h != vfb->renderHeight) {
+			vfb->uiScene->Release();
+			vfb->uiScene = nullptr;
+		}
+	}
+	if (!vfb->uiScene) {
+		vfb->uiScene = draw_->CreateFramebuffer({ vfb->renderWidth, vfb->renderHeight, 1, GetFramebufferLayers(), 0, true, "ui_scene" });
+		if (!vfb->uiScene)
+			return;
+	}
+	Draw::Aspect aspects = Draw::Aspect::COLOR_BIT;
+	if (draw_->FramebufferHasDepth(vfb->fbo) && draw_->FramebufferHasDepth(vfb->uiScene))
+		aspects = aspects | Draw::Aspect::DEPTH_BIT;
+	draw_->CopyFramebufferImage(vfb->fbo, 0, 0, 0, 0, vfb->uiScene, 0, 0, 0, 0, vfb->renderWidth, vfb->renderHeight, 1, aspects, "UISceneCapture");
+	vfb->uiSceneValid = true;
+}
+
 void FramebufferManagerCommon::DestroyFramebuf(VirtualFramebuffer *v) {
 	// Notify the texture cache of both the color and depth buffers.
 	textureCache_->NotifyFramebuffer(v, NOTIFY_FB_DESTROYED);
@@ -984,6 +1008,11 @@ void FramebufferManagerCommon::DestroyFramebuf(VirtualFramebuffer *v) {
 		v->fbo->Release();
 		v->fbo = nullptr;
 	}
+	if (v->uiScene) {
+		v->uiScene->Release();
+		v->uiScene = nullptr;
+	}
+	v->uiSceneValid = false;
 
 	// Wipe some pointers
 	DiscardFramebufferCopy();
@@ -1858,7 +1887,7 @@ void FramebufferManagerCommon::PrepareCopyDisplayToOutput(const DisplayLayoutCon
 		int actualWidth = (vfb->bufferWidth * vfb->renderWidth) / vfb->width;
 		int actualHeight = (vfb->bufferHeight * vfb->renderHeight) / vfb->height;
 		presentation_->UpdateUniforms(gpu->VideoIsPlaying());
-		presentation_->SourceFramebuffer(vfb->fbo, actualWidth, actualHeight);
+		presentation_->SourceFramebuffer(vfb->fbo, actualWidth, actualHeight, vfb->uiSceneValid ? vfb->uiScene : nullptr);
 		presentation_->RunPostshaderPasses(config, flags, uvRotation, u0, v0, u1, v1);
 	}
 }

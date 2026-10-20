@@ -1859,7 +1859,8 @@ VKRPipelineLayout *VulkanRenderManager::CreatePipelineLayout(BindingType *bindin
 		switch (bindingTypes[i]) {
 		case BindingType::COMBINED_IMAGE_SAMPLER:
 			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			// ReShade shaders can sample textures in their vertex shaders (CinematicDOF focuses there).
+			bindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 			break;
 		case BindingType::UNIFORM_BUFFER_DYNAMIC_VERTEX:
 			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;

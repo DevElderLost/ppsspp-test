@@ -486,7 +486,16 @@ bool ReshadeCompile(const std::string &fxPath, const std::string &includeDir, co
 	return true;
 }
 
-void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string *vs, std::string *fs) {
+void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, int mode, std::string *vs, std::string *fs) {
+	const char *body =
+		mode == 1 ?
+		"  vec4 fx = texture(sampler0, vUv);\n"
+		"  vec4 fin = texture(sampler1, vUv);\n"
+		"  vec3 d = abs(fin.rgb - texture(sampler2, vUv).rgb);\n"
+		"  outColor = mix(fx, fin, step(0.012, max(max(d.r, d.g), d.b)));\n" :
+		mode == 2 ?
+		"  outColor = texture(sampler0, vUv);\n" :
+		"  outColor = mix(texture(sampler0, vUv), texture(sampler1, vUv), texture(sampler2, vUv).r);\n";
 	if (target == ReshadeTarget::VULKAN) {
 		*vs =
 			"#version 450\n"
@@ -503,8 +512,7 @@ void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string 
 			"layout(set = 0, binding = 1) uniform sampler2D sampler0;\n"
 			"layout(set = 0, binding = 2) uniform sampler2D sampler1;\n"
 			"layout(set = 0, binding = 3) uniform sampler2D sampler2;\n"
-			"void main() {\n"
-			"  outColor = mix(texture(sampler0, vUv), texture(sampler1, vUv), texture(sampler2, vUv).r);\n"
+			"void main() {\n" + std::string(body) +
 			"}\n";
 		return;
 	}
@@ -522,8 +530,7 @@ void ReshadeCompositeShaders(ReshadeTarget target, int glslVersion, std::string 
 		"uniform sampler2D sampler0;\n"
 		"uniform sampler2D sampler1;\n"
 		"uniform sampler2D sampler2;\n"
-		"void main() {\n"
-		"  outColor = mix(texture(sampler0, vUv), texture(sampler1, vUv), texture(sampler2, vUv).r);\n"
+		"void main() {\n" + std::string(body) +
 		"}\n";
 }
 
