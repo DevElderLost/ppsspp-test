@@ -816,17 +816,11 @@ void GPUCommonHW::ShadowInject(u32 target) {
 }
 
 void GPUCommonHW::UiCaptureBeforePrim(VirtualFramebuffer *vfb) {
-	if (shadowInjecting_)
-		return;
-	// A new frame of drawing into this framebuffer makes the old snapshot stale.
-	if (vfb->uiDrawSerial != uiSerial_) {
-		vfb->uiDrawSerial = uiSerial_;
-		vfb->uiSceneValid = false;
-		vfb->uiSawScene = false;
-	}
-	if (gstate.isModeClear())
+	if (shadowInjecting_ || gstate.isModeClear())
 		return;
 	if (!gstate.isModeThrough()) {
+		// 3D drawing after a snapshot means the next frame has started: the old snapshot no longer matches.
+		vfb->uiSceneValid = false;
 		vfb->uiSawScene = true;
 		return;
 	}
@@ -851,7 +845,6 @@ void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) 
 void GPUCommonHW::CopyDisplayToOutput(const DisplayLayoutConfig &config) {
 	framebufferManager_->CopyDisplayToOutput(config);
 	curFramebufferDirty_ = false;
-	uiSerial_++;
 }
 
 bool GPUCommonHW::PresentedThisFrame() const {

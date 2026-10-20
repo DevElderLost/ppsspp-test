@@ -999,6 +999,8 @@ void FramebufferManagerCommon::CaptureUIScene(VirtualFramebuffer *vfb) {
 		aspects = aspects | Draw::Aspect::DEPTH_BIT;
 	draw_->CopyFramebufferImage(vfb->fbo, 0, 0, 0, 0, vfb->uiScene, 0, 0, 0, 0, vfb->renderWidth, vfb->renderHeight, 1, aspects, "UISceneCapture");
 	vfb->uiSceneValid = true;
+	// The copy ends the render pass into vfb->fbo. Without binding it again, the HUD draws that follow are lost.
+	RebindFramebuffer("After UI scene capture");
 }
 
 void FramebufferManagerCommon::DestroyFramebuf(VirtualFramebuffer *v) {

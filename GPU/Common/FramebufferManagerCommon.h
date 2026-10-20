@@ -88,9 +88,8 @@ struct VirtualFramebuffer {
 	// Snapshot of the 3D scene (color + depth) taken right before the first 2D draw of a frame, for ReShade's UI
 	// protection (see FramebufferManagerCommon::CaptureUIScene).
 	Draw::Framebuffer *uiScene = nullptr;
-	bool uiSceneValid = false;
-	bool uiSawScene = false;
-	int uiDrawSerial = -1;
+	bool uiSceneValid = false;  // uiScene holds the scene of the frame that is in this framebuffer now
+	bool uiSawScene = false;    // 3D drawing seen since the last snapshot
 
 	// width/height: The detected size of the current framebuffer, in original PSP pixels.
 	u16 width;

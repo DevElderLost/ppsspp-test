@@ -92,7 +92,6 @@ private:
 	// UI protection for ReShade effects: snapshot of the scene taken before the first 2D draw of the frame.
 	void UiCaptureBeforePrim(VirtualFramebuffer *vfb);
 	bool uiCapture_ = false;
-	int uiSerial_ = 0;
 
 	PlanarShadows planarShadows_;
 	std::vector<PlanarShadowVertex> shadowVerts_;
