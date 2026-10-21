@@ -59,6 +59,7 @@
 #include "sceKernelHeap.h"
 #include "sceKernelInterrupt.h"
 #include "sceKernelThread.h"
+#include "Core/Mods/ModEngine.h"
 #include "sceKernelMemory.h"
 #include "sceKernelModule.h"
 #include "sceKernelMutex.h"
@@ -422,6 +423,8 @@ int sceKernelDcacheInvalidateRange(u32 addr, int size)
 }
 
 int sceKernelIcacheInvalidateRange(u32 addr, int size) {
+	// A code overlay was just copied into place (see Core/Mods).
+	Mods::Manager::Instance().OnCodeLoaded();
 	if (size != 0) {
 		currentMIPS->InvalidateICacheRangeDeferred(addr, size);
 		Core_ReenterDispatcher();
@@ -483,6 +486,8 @@ int sceKernelDcacheWritebackInvalidateAll() {
 }
 
 u32 sceKernelIcacheInvalidateAll() {
+	// A code overlay may have just been copied into place (see Core/Mods).
+	Mods::Manager::Instance().OnCodeLoaded();
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache invalidated - should clear JIT someday");
 #endif
@@ -493,6 +498,8 @@ u32 sceKernelIcacheInvalidateAll() {
 }
 
 u32 sceKernelIcacheClearAll() {
+	// A code overlay may have just been copied into place (see Core/Mods).
+	Mods::Manager::Instance().OnCodeLoaded();
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache cleared - should clear JIT someday");
 #endif

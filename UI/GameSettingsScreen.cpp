@@ -51,6 +51,7 @@
 #include "UI/DeveloperToolsScreen.h"
 #include "UI/DisplayLayoutScreen.h"
 #include "UI/FirmwareScreen.h"
+#include "UI/ModsScreen.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/SavedataScreen.h"
 #include "UI/SystemInfoScreen.h"
@@ -71,6 +72,7 @@
 #include "Common/File/AndroidContentURI.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "Core/ModImport.h"
 #include "Core/ConfigValues.h"
 #include "Core/KeyMap.h"
 #include "Core/TiltEventProcessor.h"
@@ -1510,6 +1512,39 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new ItemHeader(sy->T("Cheats", "Cheats")));
 	systemSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
 	systemSettings->Add(new CheckBox(&g_Config.bEnablePlugins, sy->T("Enable plugins")));
+
+	systemSettings->Add(new ItemHeader(sy->T("Mods")));
+	Choice *importMod = systemSettings->Add(new Choice(sy->T("Import mod...")));
+	importMod->OnClick.Add([this](UI::EventParams &e) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		System_BrowseForFolder(GetRequesterToken(), sy->T("Choose the folder of the mod"), Path(), [](std::string_view value, int) {
+			auto sy = GetI18NCategory(I18NCat::SYSTEM);
+			const Path modsFolder = ModImport::GetModsFolder();
+			const ModImport::Check check = ModImport::CheckImport(Path(value), modsFolder);
+			if (!check.mods.size()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Nothing to import"), check.problem, 8.0);
+				return;
+			}
+			const ModImport::Result result = ModImport::Import(check, modsFolder);
+			std::string imported;
+			for (const std::string &id : result.imported) {
+				if (!imported.empty())
+					imported += ", ";
+				imported += id;
+			}
+			if (!result.error.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Could not import the mod"), result.error, 8.0);
+			} else if (!result.backups.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported + " (" + std::string(sy->T("the old copy is in MODS/.backup")) + ")", 6.0);
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported, 5.0);
+			}
+		});
+	});
+	systemSettings->Add(new Choice(sy->T("Mods...")))->OnClick.Add([this](UI::EventParams &e) {
+		screenManager()->push(new ModsScreen(gamePath_));
+	});
+	systemSettings->Add(new SettingHint(sy->T("Import mod Tip", "Copies the mod folder (the one with mod.ini) to PSP/MODS in the memory stick. Mods... turns them on, for Monster Hunter Portable 3rd HD (NPJB-40001). Unpack downloaded archives first"), importMod));
 
 	systemSettings->Add(new ItemHeader(sy->T("PSP Settings")));
 
