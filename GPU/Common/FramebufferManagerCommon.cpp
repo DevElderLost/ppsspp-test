@@ -34,6 +34,7 @@
 #include "Core/Debugger/MemBlockInfo.h"
 #include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
+#include "GPU/Common/PostShader.h"
 #include "GPU/Common/PresentationCommon.h"
 #include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/ReinterpretFramebuffer.h"
@@ -1889,7 +1890,12 @@ void FramebufferManagerCommon::PrepareCopyDisplayToOutput(const DisplayLayoutCon
 		int actualWidth = (vfb->bufferWidth * vfb->renderWidth) / vfb->width;
 		int actualHeight = (vfb->bufferHeight * vfb->renderHeight) / vfb->height;
 		presentation_->UpdateUniforms(gpu->VideoIsPlaying());
-		presentation_->SourceFramebuffer(vfb->fbo, actualWidth, actualHeight, vfb->uiSceneValid ? vfb->uiScene : nullptr);
+		if (g_Config.bReshadeAutoUI && ReshadeInChain()) {
+				static int logCounter = 0;
+				if ((logCounter++ % 120) == 0)
+					INFO_LOG(Log::FrameBuf, "ReShade auto UI: scene snapshot %s (captures this period: %d)", vfb->uiSceneValid ? "available" : "missing", vfb->uiCaptureCount);
+			}
+			presentation_->SourceFramebuffer(vfb->fbo, actualWidth, actualHeight, vfb->uiSceneValid ? vfb->uiScene : nullptr);
 		presentation_->RunPostshaderPasses(config, flags, uvRotation, u0, v0, u1, v1);
 	}
 }

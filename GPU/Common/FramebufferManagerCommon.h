@@ -90,6 +90,8 @@ struct VirtualFramebuffer {
 	Draw::Framebuffer *uiScene = nullptr;
 	bool uiSceneValid = false;  // uiScene holds the scene of the frame that is in this framebuffer now
 	bool uiSawScene = false;    // 3D drawing seen since the last snapshot
+	int uiCapturePeriod = -1;   // which presented frame the capture count belongs to
+	int uiCaptureCount = 0;
 
 	// width/height: The detected size of the current framebuffer, in original PSP pixels.
 	u16 width;

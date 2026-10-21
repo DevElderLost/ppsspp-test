@@ -818,14 +818,24 @@ void GPUCommonHW::ShadowInject(u32 target) {
 void GPUCommonHW::UiCaptureBeforePrim(VirtualFramebuffer *vfb) {
 	if (shadowInjecting_ || gstate.isModeClear())
 		return;
-	if (!gstate.isModeThrough()) {
+	// 2D drawing is either through mode or, in many games, 3D transform with an orthographic projection (no
+	// perspective divide: the w row of the projection matrix is 0 0 0 1 instead of 0 0 -1 0).
+	const bool is2D = gstate.isModeThrough() || fabsf(gstate.projMatrix[11]) < 1e-6f;
+	if (!is2D) {
 		// 3D drawing after a snapshot means the next frame has started: the old snapshot no longer matches.
 		vfb->uiSceneValid = false;
 		vfb->uiSawScene = true;
 		return;
 	}
+	// A new presented frame period: the capture budget starts over.
+	if (vfb->uiCapturePeriod != uiPresentCount_) {
+		vfb->uiCapturePeriod = uiPresentCount_;
+		vfb->uiCaptureCount = 0;
+	}
 	// The first 2D draw after 3D drawing: whatever is drawn from here on is HUD, as far as the effect is concerned.
-	if (vfb->uiSawScene && !vfb->uiSceneValid) {
+	// A few snapshots per frame at most: 3D that is drawn between 2D parts (particles, 3D icons) makes new ones.
+	if (vfb->uiSawScene && !vfb->uiSceneValid && vfb->uiCaptureCount < 3) {
+		vfb->uiCaptureCount++;
 		drawEngineCommon_->Flush();
 		framebufferManager_->CaptureUIScene(vfb);
 	}
@@ -845,6 +855,7 @@ void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) 
 void GPUCommonHW::CopyDisplayToOutput(const DisplayLayoutConfig &config) {
 	framebufferManager_->CopyDisplayToOutput(config);
 	curFramebufferDirty_ = false;
+	uiPresentCount_++;
 }
 
 bool GPUCommonHW::PresentedThisFrame() const {
