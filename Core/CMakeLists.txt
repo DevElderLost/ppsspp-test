@@ -280,6 +280,19 @@ add_library(Core STATIC
 	${CoreNonLibretro}
 	Config.cpp
 	Config.h
+	ModImport.cpp
+	ModImport.h
+	Mods/DataBin.cpp
+	Mods/DataBin.h
+	Mods/DataBinDump.cpp
+	Mods/DataBinDumpDisc.cpp
+	Mods/DataBinDump.h
+	Mods/ModEngine.cpp
+	Mods/ModEngine.h
+	Mods/ModGuest.cpp
+	Mods/ModLibrary.cpp
+	Mods/ModLibrary.h
+	Mods/Span.h
 	ConfigSettings.cpp
 	ConfigSettings.h
 	ConfigValues.h

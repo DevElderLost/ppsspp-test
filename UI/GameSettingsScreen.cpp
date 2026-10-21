@@ -16,6 +16,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <atomic>
 #include "ppsspp_config.h"
 
 #include <algorithm>
@@ -51,6 +52,7 @@
 #include "UI/DeveloperToolsScreen.h"
 #include "UI/DisplayLayoutScreen.h"
 #include "UI/FirmwareScreen.h"
+#include "UI/ModsScreen.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/SavedataScreen.h"
 #include "UI/SystemInfoScreen.h"
@@ -71,6 +73,9 @@
 #include "Common/File/AndroidContentURI.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "Common/Thread/ThreadManager.h"
+#include "Core/ModImport.h"
+#include "Core/Mods/DataBinDump.h"
 #include "Core/ConfigValues.h"
 #include "Core/KeyMap.h"
 #include "Core/TiltEventProcessor.h"
@@ -1142,6 +1147,34 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	}
 }
 
+// Takes DATA.BIN apart in the background: a long job, many gigabytes of reads and writes.
+static std::atomic<bool> g_dataBinDumpRunning{false};
+
+static void StartDataBinDump(const Path &gamePath) {
+	if (g_dataBinDumpRunning.exchange(true)) {
+		g_OSD.Show(OSDType::MESSAGE_WARNING, "DATA.BIN is already being extracted");
+		return;
+	}
+	g_threadManager.EnqueueTask(new IndependentTask(TaskType::IO_BLOCKING, TaskPriority::LOW, [gamePath]() {
+		Mods::DumpOptions options;
+		options.progress = [](float progress) {
+			g_OSD.SetProgressBar("databin_dump", "Extracting DATA.BIN", 0.0f, 100.0f, progress * 100.0f, 0.0f);
+		};
+		Mods::DumpStats stats;
+		const Path destination = Mods::DefaultDumpFolder();
+		g_OSD.SetProgressBar("databin_dump", "Extracting DATA.BIN", 0.0f, 100.0f, 0.0f, 0.0f);
+		const bool ok = Mods::DumpDisc(gamePath, destination, options, &stats);
+		g_OSD.RemoveProgressBar("databin_dump", ok, 0.5f);
+		if (ok) {
+			g_OSD.Show(OSDType::MESSAGE_SUCCESS, "DATA.BIN extracted",
+				std::to_string(stats.written) + " files in " + destination.ToVisualString(), 10.0f);
+		} else {
+			g_OSD.Show(OSDType::MESSAGE_ERROR, "Could not extract DATA.BIN", stats.error, 10.0f);
+		}
+		g_dataBinDumpRunning = false;
+	}));
+}
+
 void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 	using namespace UI;
 
@@ -1178,6 +1211,26 @@ void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 	tools->Add(new Choice(sy->T("PSP Firmware")))->OnClick.Add([=](UI::EventParams &) {
 		screenManager()->push(new FirmwareScreen(gamePath_));
 	});
+
+	Choice *extractDataBin = tools->Add(new Choice(sy->T("Extract DATA.BIN...")));
+	extractDataBin->OnClick.Add([=](UI::EventParams &) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		if (gamePath_.empty()) {
+			g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Open the settings from the game"),
+				sy->T("ExtractNeedsGame", "Choose the game first: DATA.BIN is taken from its disc"), 8.0f);
+			return;
+		}
+		const std::string message = std::string(sy->T("ExtractDataBinPrompt",
+			"Extract the files of DATA.BIN, decrypted, to")) + "\n" + Mods::DefaultDumpFolder().ToVisualString() +
+			"\n" + std::string(sy->T("ExtractDataBinSpace", "It takes a few minutes and about 2 GB."));
+		screenManager()->push(new PromptScreen(gamePath_, message, di->T("Extract"), di->T("Cancel"), [path = gamePath_](bool yes) {
+			if (yes)
+				StartDataBinDump(path);
+		}));
+	});
+	tools->Add(new SettingHint(sy->T("Extract DATA.BIN Tip",
+		"Monster Hunter Portable 3rd HD: every file, named by its file id, ready to edit and put in a mod folder"), extractDataBin));
 }
 
 void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
@@ -1491,6 +1544,39 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new ItemHeader(sy->T("Cheats", "Cheats")));
 	systemSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
 	systemSettings->Add(new CheckBox(&g_Config.bEnablePlugins, sy->T("Enable plugins")));
+
+	systemSettings->Add(new ItemHeader(sy->T("Mods")));
+	Choice *importMod = systemSettings->Add(new Choice(sy->T("Import mod...")));
+	importMod->OnClick.Add([this](UI::EventParams &e) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		System_BrowseForFolder(GetRequesterToken(), sy->T("Choose the folder of the mod"), Path(), [](std::string_view value, int) {
+			auto sy = GetI18NCategory(I18NCat::SYSTEM);
+			const Path modsFolder = ModImport::GetModsFolder();
+			const ModImport::Check check = ModImport::CheckImport(Path(value), modsFolder);
+			if (!check.mods.size()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Nothing to import"), check.problem, 8.0);
+				return;
+			}
+			const ModImport::Result result = ModImport::Import(check, modsFolder);
+			std::string imported;
+			for (const std::string &id : result.imported) {
+				if (!imported.empty())
+					imported += ", ";
+				imported += id;
+			}
+			if (!result.error.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Could not import the mod"), result.error, 8.0);
+			} else if (!result.backups.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported + " (" + std::string(sy->T("the old copy is in MODS/.backup")) + ")", 6.0);
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported, 5.0);
+			}
+		});
+	});
+	systemSettings->Add(new Choice(sy->T("Mods...")))->OnClick.Add([this](UI::EventParams &e) {
+		screenManager()->push(new ModsScreen(gamePath_));
+	});
+	systemSettings->Add(new SettingHint(sy->T("Import mod Tip", "Copies the mod folder (the one with mod.ini) to PSP/MODS in the memory stick. Mods... turns them on, for Monster Hunter Portable 3rd HD (NPJB-40001). Unpack downloaded archives first"), importMod));
 
 	systemSettings->Add(new ItemHeader(sy->T("PSP Settings")));
 
