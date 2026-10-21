@@ -110,7 +110,7 @@ bool FramebufferManagerCommon::UpdateRenderSize(int msaaLevel) {
 }
 
 void FramebufferManagerCommon::CheckPostShaders(const DisplayLayoutConfig &config) {
-	if (updatePostShaders_) {
+	if (updatePostShaders_ || presentation_->ScreenFxChanged()) {
 		presentation_->UpdatePostShader(config);
 		updatePostShaders_ = false;
 	}

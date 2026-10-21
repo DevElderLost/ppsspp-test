@@ -256,6 +256,9 @@ void PresentationCommon::CalculatePostShaderUniforms(int bufferWidth, int buffer
 	uniforms->setting[1] = GetShaderSettingValue(shaderInfo, 1, "SettingCurrentValue2");
 	uniforms->setting[2] = GetShaderSettingValue(shaderInfo, 2, "SettingCurrentValue3");
 	uniforms->setting[3] = GetShaderSettingValue(shaderInfo, 3, "SettingCurrentValue4");
+
+	// The built-in screen effects take their values from the config instead of the per-shader settings.
+	GetScreenFxSettings(shaderInfo, uniforms->setting);
 }
 
 static std::string ReadShaderSrc(const Path &filename) {
@@ -288,9 +291,13 @@ bool PresentationCommon::UpdatePostShader(const DisplayLayoutConfig &config) {
 	}
 
 	std::vector<const ShaderInfo *> shaderInfo;
-	if (!g_Config.vPostShaderNames.empty()) {
+	screenFxSignature_ = ScreenFxSignature();
+	if (!g_Config.vPostShaderNames.empty() || screenFxSignature_) {
 		ReloadAllPostShaderInfo(draw_);
-		shaderInfo = GetFullPostShadersChain(g_Config.vPostShaderNames);
+		if (!g_Config.vPostShaderNames.empty())
+			shaderInfo = GetFullPostShadersChain(g_Config.vPostShaderNames);
+		// The built-in screen effects (Graphics > Screen effects) go after the chosen shaders.
+		AppendScreenFxChain(&shaderInfo);
 	}
 
 	DestroyPostShader();

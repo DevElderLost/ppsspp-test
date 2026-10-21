@@ -72,6 +72,9 @@ class Texture;
 struct ShaderInfo;
 class TextureCacheCommon;
 
+// From GPU/Common/PostShader.h: which built-in screen effect passes the settings need.
+unsigned ScreenFxSignature();
+
 enum class OutputFlags {
 	DEFAULT = 0,
 	LINEAR = 0x0000,
@@ -110,6 +113,10 @@ public:
 	}
 
 	bool UpdatePostShader(const DisplayLayoutConfig &config);
+	// True when a screen effect was switched on or off since the chain was built (it then needs other passes).
+	bool ScreenFxChanged() const {
+		return screenFxSignature_ != ScreenFxSignature();
+	}
 
 	void BeginFrame(const DisplayLayoutConfig &config) {
 		if (restorePostShader_) {
@@ -220,6 +227,7 @@ protected:
 
 	bool usePostShader_ = false;
 	bool restorePostShader_ = false;
+	unsigned screenFxSignature_ = 0;  // Which built-in screen effect passes the chain was built with.
 	bool presentedThisFrame_ = false;
 	ShaderLanguage lang_;
 

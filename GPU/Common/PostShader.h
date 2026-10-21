@@ -129,6 +129,22 @@ Path GetReshadeTexturesDir();
 // files). Returns false with a message when nothing usable was found.
 bool ImportReshadeFiles(const Path &source, std::string *message);
 
+// Built-in screen effects (Graphics > Screen effects): FXAA -> colour grade -> CAS -> HDR / deband, in the same order
+// as the tiny_computer compositor. They are appended to the user's post-processing chain (before a shader that uses the
+// previous frame, which has to stay last). Their values come from g_Config and are sent through u_setting.
+enum {
+	SCREENFX_FXAA = 1,
+	SCREENFX_GRADE = 2,
+	SCREENFX_CAS = 4,
+	SCREENFX_HDR_DEBAND = 8,
+};
+// Bitmask of the passes the current settings need (0 = no screen effects). A change means the chain must be rebuilt.
+unsigned ScreenFxSignature();
+void AppendScreenFxChain(std::vector<const ShaderInfo *> *chain);
+// If `info` is one of the built-in screen effect passes, fills the four u_setting values and returns true.
+bool GetScreenFxSettings(const ShaderInfo *info, float out[4]);
+void ResetScreenFxSettings();
+
 const ShaderInfo *GetPostShaderInfo(std::string_view name);
 std::vector<const ShaderInfo *> GetPostShaderChain(const std::string &name);
 std::vector<const ShaderInfo *> GetFullPostShadersChain(const std::vector<std::string> &names);

@@ -669,6 +669,15 @@
     <None Include="..\assets\shaders\fxaa.fsh">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="..\assets\shaders\screenfx_cas.fsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\assets\shaders\screenfx_grade.fsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\assets\shaders\screenfx_hdr.fsh">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="..\assets\shaders\GaussianDownscale.fsh">
       <Filter>Shaders</Filter>
     </None>

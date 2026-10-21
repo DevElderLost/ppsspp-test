@@ -593,6 +593,27 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *shadowHide = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadowHideOriginal, gr->T("Hide original blob shadows")));
 	shadowHide->SetEnabledPtr(&g_Config.bPlanarShadows);
 
+	graphicsSettings->Add(new ItemHeader(gr->T("Screen effects")));
+	// Ported from the tiny_computer compositor. They run after the post-processing shaders, at the display resolution.
+	graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxFXAA, gr->T("FXAA anti-aliasing")));
+	CheckBox *screenFxHDR = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxHDR, gr->T("HDR effect")));
+	graphicsSettings->Add(new SettingHint(gr->T("HDR effect Tip", "Bloom and tone boost that gives the image an HDR look (not real HDR output)"), screenFxHDR));
+	CheckBox *screenFxCAS = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxCAS, gr->T("CAS sharpening")));
+	PopupSliderChoice *screenFxCASLevel = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxCASLevel, 0, 100, 50, gr->T("CAS sharpness"), 5, screenManager(), "%"));
+	screenFxCASLevel->SetEnabledPtr(&g_Config.bScreenFxCAS);
+	CheckBox *screenFxDeband = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxDeband, gr->T("Deband (dither)")));
+	graphicsSettings->Add(new SettingHint(gr->T("Deband Tip", "Adds a little noise to hide colour banding in gradients"), screenFxDeband));
+	PopupSliderChoice *screenFxDebandLevel = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxDebandLevel, 0, 200, 100, gr->T("Deband strength"), 10, screenManager(), "%"));
+	screenFxDebandLevel->SetEnabledPtr(&g_Config.bScreenFxDeband);
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxBrightness, -100, 100, 0, gr->T("Brightness"), 5, screenManager()));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxContrast, 0, 100, 0, gr->T("Contrast"), 5, screenManager()));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxGamma, 50, 300, 100, gr->T("Gamma"), 5, screenManager(), "%"));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxSaturation, 0, 200, 100, gr->T("Saturation"), 5, screenManager(), "%"));
+	graphicsSettings->Add(new Choice(gr->T("Reset screen effects")))->OnClick.Add([this](UI::EventParams &e) {
+		ResetScreenFxSettings();
+		RecreateViews();
+	});
+
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else
