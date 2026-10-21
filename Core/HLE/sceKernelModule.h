@@ -229,6 +229,11 @@ public:
 
 KernelObject *__KernelModuleObject();
 void __KernelModuleDoState(PointerWrap &p);
+// The code of the loaded modules, as (address, size).
+std::vector<std::pair<u32, u32>> __KernelModuleCodeRanges();
+// For the next savestate load: code it leaves as it was, as (address, size). Its functions aren't
+// hashed again.
+void __KernelModuleSetUnchangedCodeOnLoad(std::vector<std::pair<u32, u32>> unchanged);
 void __KernelModuleShutdown();
 
 class MIPSState;
@@ -245,8 +250,8 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 // Describes which loaded module (and section within it) an address falls in, e.g. "EBOOT.BIN.text+1234".
 // Returns an empty string if the address isn't inside any currently loaded module.
 bool DescribeModuleAddress(u32 address, char *buffer, size_t bufferSize);
-int __KernelGPUReplay();
-void __KernelReturnFromModuleFunc();
+int __KernelGPUReplay(MIPSState *mips);
+void __KernelReturnFromModuleFunc(MIPSState *mips);
 // fromTop puts the module at the top of the user partition instead of the bottom. Use it for
 // firmware modules we inject before the game loads - taking the bottom pushes the game's own ELF
 // up, which shifts every address in it and invalidates cheats and achievements, and outright
@@ -265,11 +270,13 @@ bool KernelUnloadModuleByID(SceUID moduleId);
 int __KernelStartModule(SceUID moduleId, u32 argsize, u32 argAddr, u32 returnValueAddr, SceKernelSMOption *smoption, bool *needsWait);
 u32 __KernelStopUnloadSelfModuleWithOrWithoutStatus(u32 exitCode, u32 argSize, u32 argp, u32 statusAddr, u32 optionAddr, bool WithStatus);
 u32 sceKernelFindModuleByUID(u32 uid);
+u32 sceKernelQueryLoadCoreCB();
 
 void Register_ModuleMgrForUser();
 void Register_ModuleMgrForKernel();
 void Register_SystemCtrlForKernel();
+void Register_SystemCtrlForUser();
 
 // Expose for use by KUBridge.
-u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr);
+u32 sceKernelLoadModule(MIPSState *mips, const char *name, u32 flags, u32 optionAddr);
 u32 sceKernelStartModule(u32 moduleId, u32 argsize, u32 argAddr, u32 returnValueAddr, u32 optionAddr);

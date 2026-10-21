@@ -152,6 +152,9 @@ static void UnexportFuncSymbol(const FuncSymbolExport &func);
 // Chinese-patch loaders (see sctrlHENSetStartModuleHandler below).
 static u32 g_startModuleHandler = 0;
 
+// LoadCore's control block, for sceKernelQueryLoadCoreCB. Made on first use.
+static u32 g_loadCoreCB = 0;
+
 static bool KernelImportModuleFuncs(PSPModule *module, u32 *firstImportStubAddr, bool reimporting = false);
 
 // by QueryModuleInfo
@@ -239,7 +242,7 @@ u32 PSPModule::GetMissingErrorCode() {
 }
 
 void PSPModule::DoState(PointerWrap &p) {
-	auto s = p.Section("Module", 1, 6);
+	auto s = p.Section("Module", 1, 7);
 	if (!s)
 		return;
 
@@ -284,6 +287,14 @@ void PSPModule::DoState(PointerWrap &p) {
 
 	if (s >= 5) {
 		Do(p, modulePtr.ptr);
+	}
+	if (s >= 7) {
+		// LoadExec's thread waits for plugins (and VSH modules) to start, with no timeout.
+		Do(p, pluginWaitingThread);
+		Do(p, startingPlugins);
+	} else if (p.mode == p.MODE_READ) {
+		pluginWaitingThread = 0;
+		startingPlugins.clear();
 	}
 
 	ModuleWaitingThread mwt = { 0 };
@@ -534,8 +545,28 @@ static void __KernelModuleInit() {
 	eventModuleLoadDone = CoreTiming::RegisterEvent("LoadModuleDone", &__KernelLoadModuleDone);
 }
 
+// Set for the next load by the savestate code: code the load left as it was.
+static std::vector<std::pair<u32, u32>> g_unchangedCodeOnLoad;
+
+void __KernelModuleSetUnchangedCodeOnLoad(std::vector<std::pair<u32, u32>> unchanged) {
+	g_unchangedCodeOnLoad = std::move(unchanged);
+}
+
+std::vector<std::pair<u32, u32>> __KernelModuleCodeRanges() {
+	std::vector<std::pair<u32, u32>> ranges;
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		const PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		// textEnd is the last instruction.
+		if (module && !module->isFake && module->textStart != 0 && module->textEnd >= module->textStart) {
+			ranges.emplace_back(module->textStart, module->textEnd + 4 - module->textStart);
+		}
+	}
+	return ranges;
+}
+
 void __KernelModuleDoState(PointerWrap &p) {
-	auto s = p.Section("sceKernelModule", 1, 5);
+	auto s = p.Section("sceKernelModule", 1, 7);
 	if (!s)
 		return;
 
@@ -576,6 +607,20 @@ void __KernelModuleDoState(PointerWrap &p) {
 	}
 	CoreTiming::RestoreRegisterEvent(eventModuleLoadDone, "LoadModuleDone", &__KernelLoadModuleDone);
 
+	if (s >= 6) {
+		Do(p, g_vshModulesToStart);
+		Do(p, g_vshModuleStarting);
+	} else if (p.mode == p.MODE_READ) {
+		g_vshModulesToStart.clear();
+		g_vshModuleStarting = 0;
+	}
+
+	if (s >= 7) {
+		Do(p, g_loadCoreCB);
+	} else if (p.mode == p.MODE_READ) {
+		g_loadCoreCB = 0;
+	}
+
 	if (p.mode == p.MODE_READ) {
 		u32 error;
 		// We process these late, since they depend on loadedModules for interlinking.
@@ -602,7 +647,9 @@ void __KernelModuleDoState(PointerWrap &p) {
 		}
 		// The functions were found in memory from before the load, where other code may have been
 		// (an overlay module, say.) Hash them from what's there now, so a hook only goes where it matches.
-		MIPSAnalyst::RehashFunctions();
+		// Only what the load may have changed: hashing it all again takes milliseconds.
+		MIPSAnalyst::RehashFunctions(g_unchangedCodeOnLoad);
+		g_unchangedCodeOnLoad.clear();
 		if (g_Config.bFuncReplacements) {
 			MIPSAnalyst::ReplaceFunctions();
 		}
@@ -614,6 +661,7 @@ void __KernelModuleShutdown() {
 	g_pendingModuleLoads.clear();
 	g_vshModulesToStart.clear();
 	g_vshModuleStarting = 0;
+	g_loadCoreCB = 0;
 	MIPSAnalyst::Reset();
 	HLEPlugins::Unload();
 }
@@ -2002,8 +2050,16 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 	module->nm.stub_top = modinfo->libstub;
 	module->nm.stub_size = modinfo->libstubend - modinfo->libstub;
 
-	const u32_le *entPos = (u32_le *)Memory::GetPointerOrException(modinfo->libent);
-	const u32_le *entEnd = (u32_le *)Memory::GetPointerOrException(modinfo->libentend);
+	const u32_le *entPos = nullptr;
+	const u32_le *entEnd = nullptr;
+	// A module that wasn't relocated (cut off before its relocations, see LoadInto) still has
+	// link-time addresses here.
+	if (Memory::IsValidRange(modinfo->libent, modinfo->libentend - modinfo->libent)) {
+		entPos = (const u32_le *)Memory::GetPointerUnchecked(modinfo->libent);
+		entEnd = (const u32_le *)Memory::GetPointerUnchecked(modinfo->libentend);
+	} else {
+		WARN_LOG(Log::Loader, "Garbage libent address %08x or end %08x, no exports", modinfo->libent, modinfo->libentend);
+	}
 
 	for (int m = 0; entPos < entEnd; ++m) {
 		const PspLibEntEntry *ent = (const PspLibEntEntry *)entPos;
@@ -2502,16 +2558,16 @@ bool __KernelLoadGEDump(MIPSState *mips, std::string_view base_filename, std::st
 	return true;
 }
 
-int __KernelGPUReplay() {
+int __KernelGPUReplay(MIPSState *mips) {
 	// Special ABI: s0 and s1 are the "args".  Not null terminated.
-	const char *filenamep = Memory::GetCharPointer(currentMIPS->r[MIPS_REG_S1]);
+	const char *filenamep = Memory::GetCharPointer(mips->r[MIPS_REG_S1]);
 	if (!filenamep) {
 		ERROR_LOG(Log::G3D, "__KernelGPUReplay: Failed to load dump filename");
 		Core_Stop();
 		return 0;
 	}
 
-	std::string filename(filenamep, currentMIPS->r[MIPS_REG_S0]);
+	std::string filename(filenamep, mips->r[MIPS_REG_S0]);
 	GPURecord::ReplayResult result = GPURecord::RunMountedReplay(filename);
 
 	if (result == GPURecord::ReplayResult::Error) {
@@ -2533,7 +2589,7 @@ int __KernelGPUReplay() {
 	return hleNoLog(result == GPURecord::ReplayResult::Break ? 1 : 0);
 }
 
-int sceKernelLoadExec(const char *filename, u32 paramPtr) {
+int sceKernelLoadExec(MIPSState *mips, const char *filename, u32 paramPtr) {
 	std::string exec_filename = filename;
 	PSPFileInfo info = pspFileSystem.GetFileInfo(exec_filename);
 
@@ -2559,7 +2615,7 @@ int sceKernelLoadExec(const char *filename, u32 paramPtr) {
 
 	DEBUG_LOG(Log::sceModule, "sceKernelLoadExec(name=%s,...): loading %s", filename, exec_filename.c_str());
 	std::string error_string;
-	if (!__KernelLoadExec(currentMIPS, exec_filename.c_str(), paramPtr, &error_string)) {
+	if (!__KernelLoadExec(mips, exec_filename.c_str(), paramPtr, &error_string)) {
 		Core_HLEError("sceKernelLoadExec failed: " + error_string);
 		return hleLogError(Log::sceModule, -1, "failed: %s", error_string.c_str());;
 	}
@@ -2656,7 +2712,7 @@ static u32 KernelLoadModuleFromData(const char *name, std::vector<uint8_t> &file
 	return module->GetUID();
 }
 
-u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr) {
+u32 sceKernelLoadModule(MIPSState *mips, const char *name, u32 flags, u32 optionAddr) {
 	if (!name) {
 		return hleLogError(Log::Loader, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "bad filename");
 	}
@@ -2761,7 +2817,7 @@ u32 sceKernelLoadModule(const char *name, u32 flags, u32 optionAddr) {
 		if (gpu) {
 			gpu->Reinitialize();
 		}
-		return __KernelLoadExec(currentMIPS, safeName.c_str(), 0, &error_string);
+		return __KernelLoadExec(mips, safeName.c_str(), 0, &error_string);
 	}
 	return hleDelayResult(hleNoLog(result), "module loaded", loadUs);
 }
@@ -2789,10 +2845,10 @@ static void __KernelLoadModuleDone(u64 userdata, int cyclesLate) {
 	__KernelReSchedule("module loaded");
 }
 
-static u32 sceKernelLoadModuleNpDrm(const char *name, u32 flags, u32 optionAddr) {
+static u32 sceKernelLoadModuleNpDrm(MIPSState *mips, const char *name, u32 flags, u32 optionAddr) {
 	// Just forward it, same parameters so the logging will make sense. The NPDRM EDAT wrapper these
 	// modules carry is stepped over in there, since that's keyed off the file's own magic.
-	return sceKernelLoadModule(name, flags, optionAddr);
+	return sceKernelLoadModule(mips, name, flags, optionAddr);
 }
 
 // The only thread attributes a SceKernelSMOption may carry (VFPU, SCRATCH_SRAM and 0x00F00000).
@@ -2882,6 +2938,24 @@ static u32 sctrlHENSetStartModuleHandler(u32 handlerAddr) {
 // a driver by name; since no real driver patching is done, always report it as found.
 static u32 sctrlHENFindDriver(const char *drvname) {
 	return hleLogInfo(Log::sceModule, 0, "driver %s", drvname ? drvname : "(null)");
+}
+
+// The custom firmware's lookup of a loaded module's export, by module and library name (either may
+// be left out) and NID. Only modules loaded as code have exports to find.
+static u32 sctrlHENFindFunction(const char *moduleName, const char *libraryName, u32 nid) {
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module || (moduleName && strcmp(module->GetName(), moduleName) != 0)) {
+			continue;
+		}
+		for (const FuncSymbolExport &func : module->exportedFuncs) {
+			if (func.nid == nid && (!libraryName || strcmp(func.moduleName, libraryName) == 0)) {
+				return hleLogDebug(Log::sceModule, func.symAddr);
+			}
+		}
+	}
+	return hleLogWarning(Log::sceModule, 0, "not found");
 }
 
 int __KernelStartModule(SceUID moduleId, u32 argsize, u32 argAddr, u32 returnValueAddr, SceKernelSMOption *smoption, bool *needsWait) {
@@ -3151,10 +3225,10 @@ static u32 sceKernelStopUnloadSelfModuleWithStatus(u32 exitCode, u32 argSize, u3
 	return __KernelStopUnloadSelfModuleWithOrWithoutStatus(exitCode, argSize, argp, statusAddr, optionAddr, true);
 }
 
-void __KernelReturnFromModuleFunc() {
+void __KernelReturnFromModuleFunc(MIPSState *mips) {
 	// Return from the thread as normal.
 	hleSkipDeadbeef();
-	__KernelReturnFromThread();
+	__KernelReturnFromThread(mips);
 
 	SceUID leftModuleID = __KernelGetCurThreadModuleId();
 	SceUID leftThreadID = __KernelGetCurThread();
@@ -3187,7 +3261,7 @@ void __KernelReturnFromModuleFunc() {
 		{
 			if (module->nm.status == MODULE_STATUS_UNLOADING) {
 				// TODO: Maybe should maintain the exitCode?
-				hleCall(ThreadManForKernel, int, sceKernelTerminateDeleteThread, it->threadID);
+				hleCall(ThreadManForKernel, int, sceKernelTerminateDeleteThread, mips, it->threadID);
 			} else {
 				if (it->statusPtr != 0)
 					Memory::WriteOrException_U32(exitStatus, it->statusPtr);
@@ -3302,6 +3376,21 @@ u32 sceKernelFindModuleByUID(u32 uid)
 		return hleLogError(Log::sceModule, 0, "Module Not Found or Fake");
 	}
 	return hleLogInfo(Log::sceModule, module->modulePtr.ptr);
+}
+
+// The firmware's semawm.prx walks the first 0x200 bytes, the registered libraries' 128 hash buckets,
+// for libraries a custom firmware adds (decrypted from semawm 6.61, run by PMP Mod and psp-me-bench).
+// We don't keep LoadCore's structures, so every bucket is empty.
+u32 sceKernelQueryLoadCoreCB() {
+	if (!g_loadCoreCB) {
+		u32 size = 0x400;
+		const u32 addr = kernelMemory.Alloc(size, false, "LoadCoreCB");
+		if (addr == (u32)-1)
+			return hleLogError(Log::sceModule, 0, "out of kernel memory");
+		Memory::Memset(addr, 0, size, "LoadCoreCB");
+		g_loadCoreCB = addr;
+	}
+	return hleLogInfo(Log::sceModule, g_loadCoreCB);
 }
 
 u32 sceKernelFindModuleByName(const char *name)
@@ -3592,8 +3681,8 @@ bool DescribeModuleAddress(u32 address, char *buffer, size_t bufferSize) {
 }
 
 //fix for tiger x dragon
-static u32 sceKernelLoadModuleForLoadExecVSHDisc(const char *name, u32 flags, u32 optionAddr) {
-	return sceKernelLoadModule(name, flags, optionAddr);
+static u32 sceKernelLoadModuleForLoadExecVSHDisc(MIPSState *mips, const char *name, u32 flags, u32 optionAddr) {
+	return sceKernelLoadModule(mips, name, flags, optionAddr);
 }
 
 // How the VSH loads its own plugins - the XMB's UI lives in flash0:/vsh/module/*_plugin.prx and
@@ -3604,8 +3693,8 @@ static u32 sceKernelLoadModuleForLoadExecVSHDisc(const char *name, u32 flags, u3
 //
 // The apitype the name refers to only affects what the loaded module may itself do; loading is
 // otherwise the ordinary path, same as sceKernelLoadModuleForLoadExecVSHDisc above.
-static u32 sceKernelLoadModuleVSH(const char *name, u32 flags, u32 optionAddr) {
-	return sceKernelLoadModule(name, flags, optionAddr);
+static u32 sceKernelLoadModuleVSH(MIPSState *mips, const char *name, u32 flags, u32 optionAddr) {
+	return sceKernelLoadModule(mips, name, flags, optionAddr);
 }
 
 // Looks up an already-loaded module by the name in its module info, returning its uid.
@@ -3665,6 +3754,10 @@ const HLEFunction ModuleMgrForKernel[] = {
 	{0x329C89DB, &WrapU_CUU<sceKernelLoadModuleVSH>,                    "sceKernelLoadModuleVSH",                  'x', "sxx",   HLE_KERNEL_SYSCALL },
 	{0x8909A807, &WrapU_CUU<sceKernelLoadModuleVSH>,                    "sceKernelLoadModuleVSH",                  'x', "sxx",   HLE_KERNEL_SYSCALL },
 	{0xBDFEEC4F, &WrapU_CUU<sceKernelLoadModuleVSH>,                    "sceKernelLoadModuleVSH",                  'x', "sxx",   HLE_KERNEL_SYSCALL },
+	// 6.60 NIDs.
+	{0x939E4270, &WrapU_CUU<sceKernelLoadModule>,                       "sceKernelLoadModuleForKernel",            'x', "sxx",   HLE_KERNEL_SYSCALL },
+	{0x3FF74DF1, &WrapU_UUUUU<sceKernelStartModule>,                    "sceKernelStartModule",                    'v', "xxxxx", HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED | HLE_KERNEL_SYSCALL },
+	{0x387E3CA9, &WrapU_U<sceKernelUnloadModule>,                       "sceKernelUnloadModule",                   'x', "x" ,    HLE_KERNEL_SYSCALL },
 };
 
 void Register_ModuleMgrForUser() {
@@ -3678,8 +3771,17 @@ void Register_ModuleMgrForKernel() {
 static const HLEFunction SystemCtrlForKernel[] = {
 	{0x1C90BECB, &WrapU_U<sctrlHENSetStartModuleHandler>, "sctrlHENSetStartModuleHandler", 'x', "x", HLE_KERNEL_SYSCALL},
 	{0x78E46415, &WrapU_C<sctrlHENFindDriver>,            "sctrlHENFindDriver",              'x', "s", HLE_KERNEL_SYSCALL},
+	{0x159AF5CC, &WrapU_CCU<sctrlHENFindFunction>,        "sctrlHENFindFunction",            'x', "ssx", HLE_KERNEL_SYSCALL},
+};
+
+static const HLEFunction SystemCtrlForUser[] = {
+	{0x159AF5CC, &WrapU_CCU<sctrlHENFindFunction>,        "sctrlHENFindFunction",            'x', "ssx"},
 };
 
 void Register_SystemCtrlForKernel() {
 	RegisterHLEModule("SystemCtrlForKernel", ARRAY_SIZE(SystemCtrlForKernel), SystemCtrlForKernel);
+}
+
+void Register_SystemCtrlForUser() {
+	RegisterHLEModule("SystemCtrlForUser", ARRAY_SIZE(SystemCtrlForUser), SystemCtrlForUser);
 }

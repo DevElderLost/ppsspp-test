@@ -163,8 +163,7 @@ void GameSettingsScreen::PreCreateViews() {
 }
 
 static bool UsingHardwareTextureScaling() {
-	// For now, Vulkan only.
-	return g_Config.bTexHardwareScaling && GetGPUBackend() == GPUBackend::VULKAN && !g_Config.bSoftwareRendering;
+	return g_Config.bTexHardwareScaling && (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::METAL) && !g_Config.bSoftwareRendering;
 }
 
 static std::string TextureTranslateName(std::string_view value) {
@@ -279,7 +278,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	Draw::DrawContext *draw = screenManager()->getDrawContext();
 
 #if !PPSSPP_PLATFORM(UWP)
-	static const char *renderingBackend[] = { "OpenGL", "Direct3D 9", "Direct3D 11", "Vulkan" };
+	static const char *renderingBackend[] = { "OpenGL", "Direct3D 9", "Direct3D 11", "Vulkan", "Metal" };
 	PopupMultiChoice *renderingBackendChoice = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iGPUBackend, gr->T("Backend"), renderingBackend, (int)GPUBackend::OPENGL, ARRAY_SIZE(renderingBackend), I18NCat::GRAPHICS, screenManager()));
 	renderingBackendChoice->SetPreOpenCallback([this](UI::PopupMultiChoice *choice) {
 		// Don't filter until the last possible moment, since it involves trying to initialize Vulkan, if we were
@@ -293,6 +292,8 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 			choice->HideChoice((int)GPUBackend::DIRECT3D11);
 		if (!g_Config.IsBackendEnabled(GPUBackend::VULKAN))
 			choice->HideChoice((int)GPUBackend::VULKAN);
+		if (!g_Config.IsBackendEnabled(GPUBackend::METAL))
+			choice->HideChoice((int)GPUBackend::METAL);
 	});
 
 	if (!IsFirstInstance()) {
@@ -438,17 +439,6 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Frame Rate Control")));
-	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
-	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
-	frameSkipping->SetChoicesUntranslated(1, (int)ARRAY_SIZE(frameSkip) - 1);
-	frameSkipping->SetEnabledFunc([] {
-		return !g_Config.bAutoFrameSkip;
-	});
-
-	CheckBox *frameSkipAuto = graphicsSettings->Add(new CheckBox(&g_Config.bAutoFrameSkip, gr->T("Auto FrameSkip")));
-	frameSkipAuto->OnClick.Add([](UI::EventParams &e) {
-		g_Config.UpdateAfterSettingAutoFrameSkip();
-	});
 
 	PopupSliderChoice *altSpeed1 = graphicsSettings->Add(new PopupSliderChoice(&iAlternateSpeedPercent1_, 0, 1000, UI::NO_DEFAULT_INT, gr->T("Alternative Speed", "Alternative speed"), 5, screenManager(), gr->T("%, 0:unlimited")));
 	altSpeed1->SetFormat("%i%%");
@@ -466,6 +456,18 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Speed Hacks", "Speed Hacks (can cause rendering errors!)")));
+
+	static const char *frameSkip[] = {"Off", "1", "2", "3", "4"};
+	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
+	frameSkipping->SetChoicesUntranslated(1, (int)ARRAY_SIZE(frameSkip) - 1);
+	frameSkipping->SetEnabledFunc([] {
+		return !g_Config.bAutoFrameSkip;
+	});
+
+	CheckBox *frameSkipAuto = graphicsSettings->Add(new CheckBox(&g_Config.bAutoFrameSkip, gr->T("Auto FrameSkip")));
+	frameSkipAuto->OnClick.Add([](UI::EventParams &e) {
+		g_Config.UpdateAfterSettingAutoFrameSkip();
+	});
 
 	CheckBox *skipBufferEffects = graphicsSettings->Add(new CheckBox(&g_Config.bSkipBufferEffects, gr->T("Skip Buffer Effects")));
 	graphicsSettings->Add(new SettingHint(gr->T("RenderingMode NonBuffered Tip", "Faster, but graphics may be missing in some games"), skipBufferEffects));
@@ -517,7 +519,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Texture upscaling")));
 
-	if (GetGPUBackend() == GPUBackend::VULKAN) {
+	if (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::METAL) {
 		ChoiceWithValueDisplay *textureShaderChoice = graphicsSettings->Add(new ChoiceWithValueDisplay(&g_Config.sTextureShaderName, gr->T("GPU texture upscaler (fast)"), &TextureTranslateName));
 		textureShaderChoice->OnClick.Add([this](UI::EventParams &e) {
 			auto gr = GetI18NCategory(I18NCat::GRAPHICS);

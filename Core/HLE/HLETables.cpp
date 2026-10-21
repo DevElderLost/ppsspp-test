@@ -87,11 +87,13 @@
 #include "sceSfmt19937.h"
 #include "sceG729.h"
 #include "KUBridge.h"
+#include "sceAmctrl.h"
 #include "sceNetInet.h"
 #include "sceNetResolver.h"
 // #include "sceNp2.h"
 #include "sceNet_lib.h"
 #include "sceVideocodec.h"
+#include "sceSysreg.h"
 
 static const HLEFunction FakeSysCalls[] = {
 	{NID_THREADRETURN, __KernelReturnFromThread, "__KernelReturnFromThread", 'x', ""},
@@ -149,7 +151,7 @@ static const HLEFunction LoadCoreForKernel[] = {
 	{0X0E760DBA, nullptr,                                            "sceKernelLinkLibraryEntries",             '?', ""   },
 	{0X0DE1F600, nullptr,                                            "sceKernelLinkLibraryEntriesForUser",      '?', ""   },
 	{0XDA1B09AA, nullptr,                                            "sceKernelUnLinkLibraryEntries",           '?', ""   },
-	{0XC99DD47A, nullptr,                                            "sceKernelQueryLoadCoreCB",                '?', ""   },
+	{0XC99DD47A, &WrapU_V<sceKernelQueryLoadCoreCB>,                 "sceKernelQueryLoadCoreCB",                'x', "",       HLE_KERNEL_SYSCALL },
 	{0X616FCCCD, nullptr,                                            "sceKernelSetBootCallbackLevel",           '?', ""   },
 	{0XF32A2940, nullptr,                                            "sceKernelModuleFromUID",                  '?', ""   },
 	{0XCD0F3BAC, nullptr,                                            "sceKernelCreateModule",                   '?', ""   },
@@ -165,6 +167,7 @@ static const HLEFunction LoadCoreForKernel[] = {
 	{0XC0584F0C, nullptr,                                            "sceKernelGetModuleList",                  '?', ""   },
 	{0XCF8A41B1, &WrapU_C<sceKernelFindModuleByName>,                "sceKernelFindModuleByName",               'x', "s",      HLE_KERNEL_SYSCALL },
 	{0XB95FA50D, nullptr,                                            "LoadCoreForKernel_B95FA50D",              '?', ""   },
+	{0x696594C8, &WrapU_V<sceKernelQueryLoadCoreCB>,                 "sceKernelQueryLoadCoreCB660",             'x', "",       HLE_KERNEL_SYSCALL },
 };
 
 
@@ -181,9 +184,9 @@ static u32 sceKernelSm1ReferOperations() {
 // We format it and put it in the log, which is the useful thing to do with it.
 // Declared void in the SDK headers, so the return value doesn't matter, but 0 is what the
 // firmware leaves in v0.
-static u32 Kprintf(u32 fmtAddr) {
+static u32 Kprintf(MIPSState *mips, u32 fmtAddr) {
 	std::string formatted;
-	if (!HLEFormatPrintf(fmtAddr, 1, &formatted)) {
+	if (!HLEFormatPrintf(mips, fmtAddr, 1, &formatted)) {
 		return hleLogError(Log::Printf, 0, "bad format string or args");
 	}
 	// Each log line is already a line, so don't double space.
@@ -353,6 +356,11 @@ void RegisterAllModules() {
 	Register_SystemCtrlForKernel();
 	Register_sceGe_driver();
 	Register_sceMePower_driver();
+	Register_SystemCtrlForUser();
+	Register_ExceptionManagerForKernel();
+	Register_sceSysreg_driver();
+	Register_sceSysEventForKernel();
+	Register_sceAmctrl_driver();
 
 	// Not ready to enable this due to apparent softlocks in Patapon 3.
 	// Register_sceNpMatching2();

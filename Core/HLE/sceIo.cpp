@@ -2308,7 +2308,7 @@ static u32 sceIoSetAsyncCallback(int id, u32 clbckId, u32 clbckArg) {
 	}
 }
 
-static u32 sceIoOpenAsync(const char *filename, int flags, int mode) {
+static u32 sceIoOpenAsync(MIPSState *mips, const char *filename, int flags, int mode) {
 	hleEatCycles(18000);
 	if (!filename) {
 		// Not tested on the PSP.
@@ -2648,12 +2648,12 @@ static void strcpy_limit(char *dest, const char *src, int limit) {
 	dest[i] = 0;
 }
 
-static u32 sceIoDread(int id, u32 dirent_addr) {
+static u32 sceIoDread(MIPSState *mips, int id, u32 dirent_addr) {
 	u32 error;
 	DirListing *dir = kernelObjects.Get<DirListing>(id, error);
 	if (dir) {
 		if (!Memory::IsValidRange(dirent_addr, sizeof(SceIoDirEnt))) {
-			Core_MemoryException(dirent_addr, sizeof(SceIoDirEnt), currentMIPS->pc, MemoryExceptionType::WRITE_BLOCK, "sceIoDread");
+			Core_MemoryException(dirent_addr, sizeof(SceIoDirEnt), mips->pc, MemoryExceptionType::WRITE_BLOCK, "sceIoDread");
 			return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "invalid address");
 		}
 		SceIoDirEnt *entry = (SceIoDirEnt*) Memory::GetPointerOrException(dirent_addr);
@@ -2755,14 +2755,17 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 		f->pgdInfo = pgd_open(kirk, pgd_header, 2, key_ptr);
 		if (!f->pgdInfo) {
 			f->npdrm = false;
+			const u32 plainOffset = f->pgd_offset;
 			f->pgd_offset = 0;  // Reset PGD offset so file can be read as regular file
-			pspFileSystem.SeekFile(f->handle, (s32)0, FILEMOVE_BEGIN);
 			if (memcmp(pgd_header, pgd_magic, 4) == 0) {
+				pspFileSystem.SeekFile(f->handle, (s32)0, FILEMOVE_BEGIN);
 				// File is PGD file, but key mismatch
 				ERROR_LOG(Log::sceIo, "%s is PGD file, but there's likely a key mismatch. Returning error.", f->fullpath.c_str());
 				return SCE_ERROR_PGD_INVALID_HEADER;
 			} else {
-				// File is not encrypted.
+				// File is not encrypted. Read from where the PGD would start (0 for an ordinary file): a
+				// converted PS1 PBP's disc image is plain, and POPS reads it right after this.
+				pspFileSystem.SeekFile(f->handle, (s32)plainOffset, FILEMOVE_BEGIN);
 				WARN_LOG(Log::sceIo, "%s is not an encrypted PGD file as was expected. Proceeding anyway.", f->fullpath.c_str());
 				return 0;
 			}
@@ -2777,7 +2780,13 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 
 	// Set PGD offset. Called from sceNpDrmEdataSetupKey
 	case 0x04100002:
-		f->pgd_offset = indataPtr;
+		// The POPS manager passes a pointer to the offset, with inlen 4. Our sceNpDrmEdataSetupKey
+		// passes the offset itself.
+		if (inlen == 4 && Memory::IsValidRange(indataPtr, 4)) {
+			f->pgd_offset = Memory::ReadUnchecked_U32(indataPtr);
+		} else {
+			f->pgd_offset = indataPtr;
+		}
 		break;
 
 	// Get PGD data size. Called from sceNpDrmEdataGetDataSize
@@ -3039,14 +3048,14 @@ static u32 sceKernelRegisterStdoutPipe(u32 msgPipeUID) {
 	return 0;
 }
 
-static int IoAsyncFinish(int id) {
+static int IoAsyncFinish(MIPSState *mips, int id) {
 	u32 error;
 	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		// Reset this so the Io funcs don't reject the request.
 		f->pendingAsyncResult = false;
 		// Reset the PC back so we will run again on resume.
-		currentMIPS->pc = asyncThreads[id]->Entry();
+		mips->pc = asyncThreads[id]->Entry();
 
 		auto &params = asyncParams[id];
 

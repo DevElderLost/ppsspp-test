@@ -237,6 +237,17 @@ struct GPUStatistics_v0 {
 	int moreInts[15];
 };
 
+// A savestate's display framebuffer, straight from the file. The stride can be anything (the PSP
+// takes negative ones, and GE dump playback sets others): presenting checks that.
+static void SanitizeLoadedFramebuf(FrameBufferState &fb) {
+	const bool validAddr = fb.topaddr == 0 || Memory::IsRAMAddress(fb.topaddr) || Memory::IsVRAMAddress(fb.topaddr);
+	if (!validAddr || fb.fmt < GE_FORMAT_565 || fb.fmt > GE_FORMAT_8888) {
+		ERROR_LOG(Log::SaveState, "Savestate has an invalid display framebuffer (%08x, format %d), turning the display off", fb.topaddr, (int)fb.fmt);
+		fb.topaddr = 0;
+		fb.fmt = GE_FORMAT_8888;
+	}
+}
+
 void __DisplayDoState(PointerWrap &p) {
 	auto s = p.Section("sceDisplay", 1, 8);
 	if (!s)
@@ -244,6 +255,10 @@ void __DisplayDoState(PointerWrap &p) {
 
 	Do(p, framebuf);
 	Do(p, latchedFramebuf);
+	if (p.mode == p.MODE_READ) {
+		SanitizeLoadedFramebuf(framebuf);
+		SanitizeLoadedFramebuf(latchedFramebuf);
+	}
 	Do(p, framebufIsLatched);
 	DisplayHWDoState(p, s <= 2);
 	Do(p, hasSetMode);
@@ -928,7 +943,7 @@ void __DisplaySetFramebuf(u32 topaddr, int linesize, int pixelFormat, int sync) 
 }
 
 // Some games (GTA) never call this during gameplay, so bad place to put a framerate counter.
-int sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) {
+int sceDisplaySetFramebuf(MIPSState *mips, u32 topaddr, int linesize, int pixelformat, int sync) {
 	if (sync != PSP_DISPLAY_SETBUF_IMMEDIATE && sync != PSP_DISPLAY_SETBUF_NEXTFRAME) {
 		return hleLogError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_MODE, "invalid sync mode");
 	}
@@ -969,7 +984,7 @@ int sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 		// Otherwise it'll always be ahead if the game messes up even once.
 		const s64 LEEWAY_CYCLES_PER_FLIP = usToCycles(10);
 
-		u64 now = CoreTiming::GetTicks(currentMIPS);
+		u64 now = CoreTiming::GetTicks(mips);
 		s64 cyclesAhead = nextFlipCycles - now;
 		if (cyclesAhead > FLIP_DELAY_CYCLES_MIN) {
 			if (lastFlipsTooFrequent >= FLIP_DELAY_MIN_FLIPS) {
@@ -1141,8 +1156,8 @@ static u32 sceDisplayGetMode(u32 modeAddr, u32 widthAddr, u32 heightAddr) {
 	return hleLogDebug(Log::sceDisplay, 0);
 }
 
-static u32 sceDisplayIsVsync() {
-	u64 now = CoreTiming::GetTicks(currentMIPS);
+static u32 sceDisplayIsVsync(MIPSState *mips) {
+	u64 now = CoreTiming::GetTicks(mips);
 	u64 start = DisplayFrameStartTicks() + msToCycles(vsyncStartMs);
 	u64 end = DisplayFrameStartTicks() + msToCycles(vsyncEndMs);
 

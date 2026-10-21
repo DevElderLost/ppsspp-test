@@ -189,7 +189,7 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(fullscreen), CmdParamType::BoolInverse, "windowed", '\0', "Force windowed mode", CmdLineMode::Application},
 	{POFF(startScreen), CmdParamType::String, "start-screen", '\0', "Start on a specific screen (e.g. 'gamesettings', 'touchscreentest')", CmdLineMode::Application},
 	{POFF(escapeExit), CmdParamType::Bool, "escape-exit", '\0', "Escape key exits the application", CmdLineMode::Application},
-	{POFF(pauseMenuExit), CmdParamType::Bool, "pause-menu-exit", '\0', "Change \"Exit to menu\" in pause menu to \"Exit\"", CmdLineMode::Application},
+	{POFF(pauseMenuExit), CmdParamType::Bool, "pause-menu-exit", '\0', "Exit the application when the game ends, instead of returning to the menu", CmdLineMode::Application},
 	{POFF(appendConfig), CmdParamType::String, "appendconfig", '\0', "Merge config FILE into the current configuration"},
 	{POFF(root), CmdParamType::String, "root", 'r', "Mount directory as the root of host0:/."},
 	{POFF(memStick), CmdParamType::String, "memstick", '\0', "Memory stick root directory (contains PSP/GAME etc)"},
@@ -199,7 +199,6 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(compare), CmdParamType::Bool, "compare", 'c', "Enable comparison mode", CmdLineMode::Headless},
 	{POFF(bench), CmdParamType::Bool, "bench", 'b', "Enable benchmark mode", CmdLineMode::Headless},
 	{POFF(oldAtrac), CmdParamType::Bool, "old-atrac", '\0', "Use old ATRAC decoder"},
-	{POFF(accurateVdot), CmdParamType::Bool, "accurate-vdot", '\0', "Compute VFPU dot products bit-exactly like the PSP (default; =false for the faster approximation)"},
 	{POFF(jitProfile), CmdParamType::String, "jit-profile", '\0', "Profile the CPU core and write its hottest blocks to FILE on exit"},
 	{POFF(memStickInserted), CmdParamType::BoolInverse, "no-memstick", '\0', "Run with the memory stick removed"},
 	{POFF(log), CmdParamType::String, "log", '\0', "Output log to FILE", CmdLineMode::Application},
@@ -211,6 +210,7 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(dumpCompat), CmdParamType::Bool, "dump-compat", '\0', "Apply the game's compat.ini settings when replaying a GE frame dump (off by default)", CmdLineMode::Headless},
 	{POFF(hardwareTransform), CmdParamType::Bool, "hardware-transform", '\0', "Transform vertices on the GPU (default true); false transforms them on the CPU", CmdLineMode::Headless},
 	{POFF(vertexJit), CmdParamType::Bool, "vertex-jit", '\0', "Decode vertices with the JIT where the host can (default; =false for the C++ decoder)", CmdLineMode::Headless},
+	{POFF(emulateMediaEngine), CmdParamType::Bool, "me-core", '\0', "Emulate the Media Engine for homebrew that runs code on it (default false)"},
 	{POFF(shaderCache), CmdParamType::Bool, "shader-cache", '\0', "Load and save the per-game shader cache (default true); =false to time shader compiles like a first boot"},
 	{POFF(disableGPUFeatures), CmdParamType::String, "disable-gpu-features", '\0', "Act as if the GPU lacked these, to test the fallbacks: comma-separated clip-distance, cull-distance, depth-clamp, framebuffer-fetch, dual-source-blend", CmdLineMode::Headless},
 	{POFF(depthFilenameSave), CmdParamType::String, "depth-save", '\0', "Save the depth buffer to FILE along with the screenshot (u32 width, u32 height, u16 depths; float depths if FILE ends in .f32)", CmdLineMode::Headless},
@@ -218,6 +218,8 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(screenshotFilenameDiff), CmdParamType::String, "screenshot-diff", '\0', "Save a visual comparison image to FILE when comparing screenshots", CmdLineMode::Headless},
 	{POFF(screenshotSaveKeepAlpha), CmdParamType::Bool, "screenshot-keep-alpha", '\0', "Preserve the alpha channel when saving PNG screenshots (default: alpha is forced to 255)", CmdLineMode::Headless},
 	{POFF(dumpAudioFilename), CmdParamType::String, "dump-audio", '\0', "Record the mixed audio output to a WAV file", CmdLineMode::Headless},
+	{POFF(pressScript), CmdParamType::String, "press", '\0', "Hold buttons at emulated times: SECONDS:MASK[:DURATION],...", CmdLineMode::Headless},
+	{POFF(screenshotAt), CmdParamType::String, "screenshot-at", '\0', "Save screenshots at emulated times: SECONDS:FILE,...", CmdLineMode::Headless},
 	{POFF(timeoutWall), CmdParamType::Double, "timeout-wall", '\0', "Stop the run after this many real seconds", CmdLineMode::Headless},
 	{POFF(timeoutEmulated), CmdParamType::Double, "timeout-emulated", '\0', "Stop the run after this many emulated seconds", CmdLineMode::Headless},
 	// The old name for --timeout-wall, kept working because it's in a lot of scripts.
@@ -469,6 +471,9 @@ CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], C
 			} else if (restOfOption == "vulkan") {
 				gpuBackend = GPUBackend::VULKAN;
 				softwareRendering = false;
+			} else if (restOfOption == "metal") {
+				gpuBackend = GPUBackend::METAL;
+				softwareRendering = false;
 			} else if (restOfOption == "software") {
 				gpuBackend = GPUBackend::OPENGL;
 				softwareRendering = true;
@@ -566,6 +571,10 @@ void CommandLineOptions::ApplyToConfig() const {
 		g_Config.bHardwareTransform = hardwareTransform.value();
 		g_Config.DoNotSaveSetting(&g_Config.bHardwareTransform);
 	}
+	if (emulateMediaEngine.has_value()) {
+		g_Config.bEmulateMediaEngine = emulateMediaEngine.value();
+		g_Config.DoNotSaveSetting(&g_Config.bEmulateMediaEngine);
+	}
 	if (shaderCache.has_value()) {
 		g_Config.bShaderCache = shaderCache.value();
 		g_Config.DoNotSaveSetting(&g_Config.bShaderCache);
@@ -631,10 +640,6 @@ void CommandLineOptions::ApplyToConfig() const {
 	if (oldAtrac.has_value()) {
 		g_Config.bUseOldAtrac = oldAtrac.value();
 		g_Config.DoNotSaveSetting(&g_Config.bUseOldAtrac);
-	}
-	if (accurateVdot.has_value()) {
-		g_Config.bAccurateVdot = accurateVdot.value();
-		g_Config.DoNotSaveSetting(&g_Config.bAccurateVdot);
 	}
 	if (jitProfile.has_value()) {
 		g_Config.sJitProfileFile = jitProfile.value();

@@ -80,6 +80,8 @@ std::string GPUBackendToString(GPUBackend backend) {
 		return "DIRECT3D11";
 	case GPUBackend::VULKAN:
 		return "VULKAN";
+	case GPUBackend::METAL:
+		return "METAL";
 	}
 	// Intentionally not a default so we get a warning.
 	return "INVALID";
@@ -92,6 +94,8 @@ GPUBackend GPUBackendFromString(std::string_view backend) {
 		return GPUBackend::DIRECT3D11;
 	if (equalsNoCase(backend, "VULKAN") || backend == "3")
 		return GPUBackend::VULKAN;
+	if (equalsNoCase(backend, "METAL") || backend == "4")
+		return GPUBackend::METAL;
 	return GPUBackend::OPENGL;
 }
 
@@ -332,6 +336,8 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("CompressSymbols", SETTING(g_Config, bCompressSymbols), true, CfgFlag::DEFAULT),
 	ConfigSetting("CacheFullIsoInRam", SETTING(g_Config, bCacheFullIsoInRam), false, CfgFlag::PER_GAME),
 	ConfigSetting("AutoUpgradeFirmware", SETTING(g_Config, bAutoUpgradeFirmware), true, CfgFlag::DEFAULT),
+	ConfigSetting("CSOPreset", SETTING(g_Config, iCSOPreset), 0, CfgFlag::DEFAULT),
+	ConfigSetting("PackKeepOriginal", SETTING(g_Config, bPackKeepOriginal), false, CfgFlag::DEFAULT),
 	ConfigSetting("RemoteISOPort", SETTING(g_Config, iRemoteISOPort), 0, CfgFlag::DEFAULT),
 	ConfigSetting("LastRemoteISOServer", SETTING(g_Config, sLastRemoteISOServer), "", CfgFlag::DEFAULT),
 	ConfigSetting("LastRemoteISOPort", SETTING(g_Config, iLastRemoteISOPort), 0, CfgFlag::DEFAULT),
@@ -439,8 +445,8 @@ static const ConfigSetting cpuSettings[] = {
 	ConfigSetting("SeparateSASThread", SETTING(g_Config, bSeparateSASThread), &DefaultSasThread, CfgFlag::PER_GAME | CfgFlag::REPORT),
 	ConfigSetting("IOTimingMethod", SETTING(g_Config, iIOTimingMethod), IOTIMING_FAST, CfgFlag::PER_GAME | CfgFlag::REPORT),
 	ConfigSetting("FastMemoryAccess", SETTING(g_Config, bFastMemory), true, CfgFlag::PER_GAME),
+	ConfigSetting("EmulateMediaEngine", SETTING(g_Config, bEmulateMediaEngine), false, CfgFlag::REPORT),
 	ConfigSetting("FunctionReplacements", SETTING(g_Config, bFuncReplacements), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
-	ConfigSetting("AccurateVdot", SETTING(g_Config, bAccurateVdot), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
 	ConfigSetting("HideSlowWarnings", SETTING(g_Config, bHideSlowWarnings), false, CfgFlag::DEFAULT),
 	ConfigSetting("HideStateWarnings", SETTING(g_Config, bHideStateWarnings), false, CfgFlag::DEFAULT),
 	ConfigSetting("JitDisableFlags", SETTING(g_Config, uJitDisableFlags), (uint32_t)0, CfgFlag::PER_GAME),
@@ -608,6 +614,11 @@ bool Config::IsBackendEnabled(GPUBackend backend) {
 		return false;
 #else
 	if (backend == GPUBackend::DIRECT3D11)
+		return false;
+#endif
+
+#if !PPSSPP_API(METAL)
+	if (backend == GPUBackend::METAL)
 		return false;
 #endif
 
@@ -1025,6 +1036,7 @@ static const ConfigSetting controlSettings[] = {
 	ConfigSetting("TiltCircularDeadzone", SETTING(g_Config, bTiltCircularDeadzone), true, CfgFlag::PER_GAME),
 	ConfigSetting("TiltInputType", SETTING(g_Config, iTiltInputType), 1, CfgFlag::PER_GAME),
 	ConfigSetting("TiltInputEnabled", SETTING(g_Config, bTiltInputEnabled), false, CfgFlag::PER_GAME),
+	ConfigSetting("TiltUseGyro", SETTING(g_Config, bTiltUseGyro), true, CfgFlag::PER_GAME),
 
 	ConfigSetting("DisableDpadDiagonals", SETTING(g_Config, bDisableDpadDiagonals), false, CfgFlag::PER_GAME),
 	ConfigSetting("GamepadOnlyFocused", SETTING(g_Config, bGamepadOnlyFocused), false, CfgFlag::PER_GAME),
@@ -1625,7 +1637,7 @@ void Config::PostLoadCleanup() {
 
 	if (iGPUBackend == 1) {  // d3d9, no longer supported. Fall back to D3D11.
 		iGPUBackend = (int)GPUBackend::DIRECT3D11;
-	} else if (iGPUBackend < 0 || iGPUBackend > 3) {
+	} else if (iGPUBackend < 0 || iGPUBackend > (int)GPUBackend::METAL) {
 		iGPUBackend = (int)DefaultGPUBackend();
 	}
 

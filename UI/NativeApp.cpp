@@ -136,6 +136,7 @@
 #include "UI/Background.h"
 #include "UI/BackgroundAudio.h"
 #include "UI/ControlMappingScreen.h"
+#include "UI/GamePacker.h"
 #include "UI/DevScreens.h"
 #include "UI/DiscordIntegration.h"
 #include "UI/EmuScreen.h"
@@ -208,6 +209,8 @@ static std::string g_savedAchievementsHost;
 static bool g_savedAchievementsHardcoreMode = false;
 static bool g_hasSavedAchievementsSettings = false;
 static bool g_nativeMainThreadReady = false;
+// Kept to apply again after a config reload.
+static CommandLineOptions g_cmdLineOptions;
 
 static std::mutex g_inputEventQueueLock;
 static std::vector<QueuedEvent> g_inputEventQueue;
@@ -651,15 +654,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 #elif PPSSPP_PLATFORM(WINDOWS)
 	// ...
 #else
-	std::string config;
-	if (getenv("XDG_CONFIG_HOME") != NULL)
-		config = getenv("XDG_CONFIG_HOME");
-	else if (getenv("HOME") != NULL)
-		config = getenv("HOME") + std::string("/.config");
-	else // Just in case
-		config = "./config";
-
-	g_Config.memStickDirectory = Path(config) / "ppsspp";
+	g_Config.memStickDirectory = GetDefaultDesktopMemStickDirectory();
 	if (getenv("HOME") != nullptr) {
 		g_Config.defaultCurrentDirectory = Path(getenv("HOME"));
 	} else {
@@ -671,6 +666,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	if (g_Config.currentDirectory.empty()) {
 		g_Config.currentDirectory = g_Config.defaultCurrentDirectory;
+	}
+
+	// --memstick replaces the memory stick, the config in it included, so it has to be in place before the config
+	// is loaded. ApplyToConfig() below sets it again, which changes nothing.
+	if (cmdLineOptions.memStick.has_value()) {
+		g_Config.memStickDirectory = Path(cmdLineOptions.memStick.value());
+		File::CreateFullPath(g_Config.memStickDirectory);
+		CreateSysDirectories();
 	}
 
 	// Mount a filesystem
@@ -692,6 +695,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	// Apply parsed command line options to config.
 	cmdLineOptions.ApplyToConfig();
+	g_cmdLineOptions = cmdLineOptions;
 
 	boot_filename.clear();
 	if (boot_filename.empty() && cmdLineOptions.bootVSH.value_or(false)) {
@@ -1151,6 +1155,8 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 
 	g_GameManager.Update();
 
+	GamePacker::UpdateOnUIThread();
+
 	if (GetUIState() != UISTATE_INGAME) {
 		// Note: We do this from NativeFrame so that the graphics context is
 		// guaranteed valid, to be safe - g_gameInfoCache messes around with textures.
@@ -1432,6 +1438,8 @@ bool HandleGlobalMessage(UIMessage message, const std::string &value) {
 		INFO_LOG(Log::IO, "Reloading config after storage permission grant.");
 		g_Config.Reload();
 		PostLoadConfig();
+		// The reload reset what the command line set.
+		g_cmdLineOptions.ApplyToConfig();
 		g_Config.iGPUBackend = gpuBackend;
 		return true;
 	} else if (message == UIMessage::APP_RESUMED || message == UIMessage::GOT_FOCUS) {
@@ -1474,23 +1482,31 @@ void NativeTouch(const TouchInput &touch) {
 	g_inputEventQueue.push_back(ev);
 }
 
-// up, down
+// up, down. Presses arrive on the input thread, timed releases on the UI thread.
+static std::mutex g_wheelReleaseLock;
 static double g_wheelReleaseTime[2]{};
 
 static void ProcessWheelRelease(InputKeyCode keyCode, double now, bool keyPress) {
 	int dir = keyCode - NKCODE_EXT_MOUSEWHEEL_UP;
-	if (g_wheelReleaseTime[dir] != 0.0 && (keyPress || now >= g_wheelReleaseTime[dir])) {
-		g_wheelReleaseTime[dir] = 0.0;
+	bool release = false;
+	{
+		std::lock_guard<std::mutex> guard(g_wheelReleaseLock);
+		if (g_wheelReleaseTime[dir] != 0.0 && (keyPress || now >= g_wheelReleaseTime[dir])) {
+			g_wheelReleaseTime[dir] = 0.0;
+			release = true;
+		}
+		if (keyPress) {
+			float releaseTime = (float)g_Config.iMouseWheelUpDelayMs * (1.0f / 1000.0f);
+			g_wheelReleaseTime[dir] = now + releaseTime;
+		}
+	}
+
+	if (release) {
 		KeyInput key{};
 		key.deviceId = DEVICE_ID_MOUSE;
 		key.keyCode = keyCode;
 		key.flags = KeyInputFlags::UP;
 		NativeKey(key);
-	}
-
-	if (keyPress) {
-		float releaseTime = (float)g_Config.iMouseWheelUpDelayMs * (1.0f / 1000.0f);
-		g_wheelReleaseTime[dir] = now + releaseTime;
 	}
 }
 
@@ -1535,20 +1551,23 @@ bool NativeKey(const KeyInput &key) {
 #ifdef _DEBUG
 	// Debug hack: Randomize the language with F9!
 	if ((key.keyCode == NKCODE_F9 && (key.flags & KeyInputFlags::DOWN))) {
-		std::vector<File::FileInfo> tempLangs;
-		g_VFS.GetFileListing("lang", &tempLangs, "ini");
-		int x = rand() % tempLangs.size();
+		// We're on the input thread, and this recreates the views.
+		System_RunOnMainThread([]() {
+			std::vector<File::FileInfo> tempLangs;
+			g_VFS.GetFileListing("lang", &tempLangs, "ini");
+			int x = rand() % tempLangs.size();
 
-		g_Config.DoNotSaveSetting(&g_Config.sLanguageIni);
-		std::string_view code, part2;
-		if (SplitStringOnce(tempLangs[x].name, &code, &part2, '.')) {
-			g_Config.sLanguageIni = code;
-			INFO_LOG(Log::System, "Switching to random language: %s", g_Config.sLanguageIni.c_str());
-			if (g_i18nrepo.LoadIni(g_Config.sLanguageIni)) {
-				g_screenManager->RecreateAllViews();
-				System_Notify(SystemNotification::UI);
+			g_Config.DoNotSaveSetting(&g_Config.sLanguageIni);
+			std::string_view code, part2;
+			if (SplitStringOnce(tempLangs[x].name, &code, &part2, '.')) {
+				g_Config.sLanguageIni = code;
+				INFO_LOG(Log::System, "Switching to random language: %s", g_Config.sLanguageIni.c_str());
+				if (g_i18nrepo.LoadIni(g_Config.sLanguageIni)) {
+					g_screenManager->RecreateAllViews();
+					System_Notify(SystemNotification::UI);
+				}
 			}
-		}
+		});
 	}
 #endif
 
@@ -1783,13 +1802,7 @@ void NativeMouseDelta(float dx, float dy) {
 	SendMouseDeltaAxis();
 }
 
-// TODO: Should include a device ID here, since accelerometers can be on pads for example (DualSense).
-void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
-	if (g_Config.iTiltInputType == TILT_NULL) {
-		// if tilt events are disabled, don't do anything special.
-		return;
-	}
-
+static void ProcessTiltVector(float tiltX, float tiltY, float tiltZ) {
 	// create the base coordinate tilt system from the calibration data.
 	float tiltBaseAngleY = g_Config.fTiltBaseAngleY;
 
@@ -1810,10 +1823,35 @@ void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
 	TiltEventProcessor::ProcessTilt(landscape, tiltBaseAngleY, tiltX, tiltY, tiltZ,
 		g_Config.bInvertTiltX, g_Config.bInvertTiltY,
 		xSensitivity, ySensitivity);
+}
+
+// TODO: Should include a device ID here, since accelerometers can be on pads for example (DualSense).
+void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
+	if (g_Config.iTiltInputType == TILT_NULL) {
+		// if tilt events are disabled, don't do anything special.
+		return;
+	}
+
+	TiltEventProcessor::ProcessAccelerometerForFusion(tiltX, tiltY, tiltZ);
+	// When there's a gyro, its events drive tilt instead.
+	if (!g_Config.bTiltUseGyro || !TiltEventProcessor::GyroActive()) {
+		ProcessTiltVector(tiltX, tiltY, tiltZ);
+	}
 
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_X] = tiltX;
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_Y] = tiltY;
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_Z] = tiltZ;
+}
+
+void NativeGyroscope(float x, float y, float z, double timestamp) {
+	if (g_Config.iTiltInputType == TILT_NULL) {
+		return;
+	}
+
+	Lin::Vec3 gravity;
+	if (TiltEventProcessor::ProcessGyro(x, y, z, timestamp, &gravity) && g_Config.bTiltUseGyro) {
+		ProcessTiltVector(gravity.x, gravity.y, gravity.z);
+	}
 }
 
 void System_PostUIMessage(UIMessage message, std::string_view param) {
@@ -1843,6 +1881,9 @@ void NativeShutdown() {
 	g_controlMapper.RemoveListener(&g_globalListener);
 
 	Achievements::Shutdown(false);  // CancelAll below drops the pending requests.
+
+	// A half-written image would be left behind otherwise.
+	GamePacker::Shutdown();
 
 	if (g_Config.bAchievementsEnable) {
 		FILE *iconCacheFile = File::OpenCFile(GetSysDirectory(DIRECTORY_CACHE) / "icon.cache", "wb");

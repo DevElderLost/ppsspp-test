@@ -1078,7 +1078,7 @@ void FramebufferManagerCommon::ShiftDepthForOffsetRendering(VirtualFramebuffer *
 	if (w <= 0) {
 		return;
 	}
-	Draw::Framebuffer *temp = GetTempFBO(TempFBO::DEPTH_SHIFT, vfb->renderWidth, vfb->renderHeight);
+	Draw::Framebuffer *temp = GetTempFBO(TempFBO::DEPTH_SHIFT, vfb->renderWidth, vfb->renderHeight, vfb->fbo->MultiSampleLevel());
 	if (!temp) {
 		return;
 	}
@@ -1479,6 +1479,16 @@ void FramebufferManagerCommon::CopyFramebufferForColorTexture(VirtualFramebuffer
 	}
 }
 
+// Whether the 480x272 the display shows from addr is all in memory. The PSP takes strides that
+// aren't: negative ones (rows going up, which this doesn't handle), and larger than VRAM has room for.
+static bool IsValidDisplayRange(u32 addr, int stride, GEBufferFormat format) {
+	if (stride <= 0) {
+		return false;
+	}
+	const u32 bpp = BufferFormatBytesPerPixel(format);
+	return Memory::IsValidRange(addr, ((272 - 1) * (u32)stride + 480) * bpp);
+}
+
 Draw::Texture *FramebufferManagerCommon::MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) {
 	Draw::DataFormat depthFormat = Draw::DataFormat::UNDEFINED;
 
@@ -1755,8 +1765,10 @@ VirtualFramebuffer *FramebufferManagerCommon::FindDisplayVFB(u32 fbaddr, u32 *of
 		}
 	}
 
-	// Reject too-tiny framebuffers to display (Godfather, see issue #16915).
-	if (vfb && vfb->height < 64) {
+	// Reject too-tiny framebuffers to display (Godfather, see issue #16915). By the buffer's size: width
+	// and height only cover the latest draw, which can be small (the OoT PSP port ends its frames with
+	// a 51x51 one).
+	if (vfb && vfb->bufferHeight < 64) {
 		vfb = nullptr;
 	}
 	return vfb;
@@ -1787,7 +1799,7 @@ void FramebufferManagerCommon::PrepareCopyDisplayToOutput(const DisplayLayoutCon
 	VirtualFramebuffer *vfb = FindDisplayVFB(fbaddr, &offsetX, &offsetY);
 
 	if (!vfb) {
-		if (Memory::IsValidAddress(fbaddr)) {
+		if (IsValidDisplayRange(fbaddr, displayStride_, displayFormat_)) {
 			// The game is displaying something directly from RAM. In GTA, it's decoded video.
 			// If successful, this effectively calls presentation_->NotifyPresent();
 			if (!DrawFramebufferToOutput(config, Memory::GetPointerUnchecked(fbaddr), displayStride_, displayFormat_)) {
@@ -1984,6 +1996,7 @@ void FramebufferManagerCommon::ResizeFramebufFBO(VirtualFramebuffer *vfb, int w,
 	}
 
 	bool creating = old.bufferWidth == 0;
+	vfb->multisampled = ShouldMultisample(vfb);
 	if (creating) {
 		INFO_LOG(Log::FrameBuf, "Creating %s FBO at %08x/%08x stride=%d %dx%d (force=%d)", GeBufferFormatToString(vfb->fb_format), vfb->fb_address, vfb->z_address, vfb->fb_stride, vfb->bufferWidth, vfb->bufferHeight, (int)force);
 	} else {
@@ -2016,7 +2029,7 @@ void FramebufferManagerCommon::ResizeFramebufFBO(VirtualFramebuffer *vfb, int w,
 
 	gpuStats.perFrame.numFBOsCreated++;
 
-	vfb->fbo = draw_->CreateFramebuffer({ vfb->renderWidth, vfb->renderHeight, 1, GetFramebufferLayers(), msaaLevel_, true, tag });
+	vfb->fbo = draw_->CreateFramebuffer({ vfb->renderWidth, vfb->renderHeight, 1, GetFramebufferLayers(), vfb->multisampled ? msaaLevel_ : 0, true, tag });
 	if (Memory::IsVRAMAddress(vfb->fb_address) && vfb->fb_stride != 0) {
 		NotifyMemInfo(MemBlockFlags::ALLOC, vfb->fb_address, vfb->BufferByteSize(RASTER_COLOR), tag, len);
 	}
@@ -3017,7 +3030,7 @@ void FramebufferManagerCommon::NotifyBlockTransferAfter(u32 dstBasePtr, int dstS
 	if (!useBufferedRendering_ && dstStride >= 480 && width >= 480 && height == 272) {
 		bool isPrevDisplayBuffer = PrevDisplayFramebufAddr() == dstBasePtr;
 		bool isDisplayBuffer = CurrentDisplayFramebufAddr() == dstBasePtr;
-		if (isPrevDisplayBuffer || isDisplayBuffer) {
+		if ((isPrevDisplayBuffer || isDisplayBuffer) && IsValidDisplayRange(dstBasePtr, dstStride, displayFormat_)) {
 			FlushBeforeCopy();
 			// HACK
 			DrawFramebufferToOutput(displayLayoutConfigCopy_, Memory::GetPointerUnchecked(dstBasePtr), dstStride, displayFormat_);
@@ -3121,6 +3134,9 @@ void FramebufferManagerCommon::NotifyConfigChanged() {
 void FramebufferManagerCommon::DestroyAllFBOs() {
 	DiscardFramebufferCopy();
 	currentRenderVfb_ = nullptr;
+	// Or a new framebuffer at the same address would skip its depth shift.
+	depthShiftedFor_ = 0;
+	lastRenderAddress_ = 0;
 	displayFramebuf_ = nullptr;
 	prevDisplayFramebuf_ = nullptr;
 	prevPrevDisplayFramebuf_ = nullptr;
@@ -3165,6 +3181,12 @@ static const char *TempFBOReasonToString(TempFBO reason) {
 	return "";
 }
 
+// Only full size framebuffers get MSAA. Smaller ones are mostly effects (blur, bloom), and MSAA changes those
+// (Syphon Filter: Logan's Shadow grows a glow around lit floor panels).
+bool FramebufferManagerCommon::ShouldMultisample(const VirtualFramebuffer *vfb) const {
+	return vfb->bufferWidth >= 480 && vfb->bufferHeight >= 272;
+}
+
 Draw::Framebuffer *FramebufferManagerCommon::CopyColorSample0(VirtualFramebuffer *vfb) {
 	if (!vfb->fbo || vfb->fbo->MultiSampleLevel() == 0) {
 		return nullptr;
@@ -3186,8 +3208,11 @@ Draw::Framebuffer *FramebufferManagerCommon::CopyColorSample0(VirtualFramebuffer
 	return copy;
 }
 
-Draw::Framebuffer *FramebufferManagerCommon::GetTempFBO(TempFBO reason, u16 w, u16 h) {
-	u64 key = ((u64)reason << 48) | ((u32)w << 16) | h;
+Draw::Framebuffer *FramebufferManagerCommon::GetTempFBO(TempFBO reason, u16 w, u16 h, int msaaLevel) {
+	if (reason != TempFBO::DEPTH_SHIFT) {
+		msaaLevel = 0;
+	}
+	u64 key = ((u64)msaaLevel << 56) | ((u64)reason << 48) | ((u32)w << 16) | h;
 	auto it = tempFBOs_.find(key);
 	if (it != tempFBOs_.end()) {
 		it->second.last_frame_used = gpuStats.totals.numFlips;
@@ -3195,8 +3220,6 @@ Draw::Framebuffer *FramebufferManagerCommon::GetTempFBO(TempFBO reason, u16 w, u
 	}
 
 	bool z_stencil = reason == TempFBO::STENCIL || reason == TempFBO::DEPTH_SHIFT;
-	// The depth shift copies to and from a framebuffer, which needs the same samples.
-	const int msaaLevel = reason == TempFBO::DEPTH_SHIFT ? msaaLevel_ : 0;
 	char name[128];
 	snprintf(name, sizeof(name), "tempfbo_%s_%dx%d", TempFBOReasonToString(reason), w / renderScaleFactor_, h / renderScaleFactor_);
 

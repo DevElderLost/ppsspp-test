@@ -55,7 +55,9 @@ A working invocation, and the traps around it:
 
 - **The timeouts apply to the whole session**, not per test. `--timeout-wall=N` is real seconds and
   `--timeout-emulated=N` is emulated ones; both default to infinity, both can be set at once, and whichever
-  is reached first ends the run (`TIMEOUT` or `TIMEOUT (emulated)`). `--timeout` is the old name for
+  is reached first ends the run (`TIMEOUT` or `TIMEOUT (emulated)`). With `--state=`, emulated time counts
+  from when the state has loaded: until then the game boots for however long the load takes on the host, so
+  counting from boot made runs end on different frames. `--timeout` is the old name for
   `--timeout-wall`. As soon as you pass one it applies to your whole interactive debugging session too, so
   pass something huge (`--timeout-wall=100000`) or the process exits out from under you mid-session. The
   wall-clock check is skipped while `IsDebuggerPresent()`; the emulated one doesn't need that escape hatch,
@@ -223,6 +225,10 @@ animation follows wall-clock time, so even the same binary lands on different fr
 To check that a game keeps running after `--state=` loads, pass `--frame-stats`: at the end of the run it prints
 the flips in each emulated second since the load. A stuck or crashed game shows as zeros or a short list, and a
 steady game as a flat 30 or 60. The state's load result is printed too, and a failed load exits 1.
+
+To get past menus, `--press=SECONDS:MASK[:DURATION],...` holds buttons at emulated times (`MASK` is a sceCtrl
+mask, `0x8` START and `0x4000` CROSS, held 0.15 seconds by default), and `--screenshot-at=SECONDS:FILE,...` saves
+screenshots along the way.
 
 For audio, `--dump-audio=FILE.wav` records the mixed output (before the game volume setting) for the whole run.
 An audio glitch you can hear usually shows in the waveform: a click is a jump between neighbouring samples, and

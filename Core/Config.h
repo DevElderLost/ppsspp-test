@@ -233,12 +233,12 @@ public:
 
 	bool bFastMemory;
 	int iCpuCore;
+	// Run homebrew's Media Engine code (Core/MIPS/MeCore.h). Global for now, in developer settings.
+	bool bEmulateMediaEngine;
 	bool bCheckForNewVersion;
 	bool bWow64WarningDismissed;
 	bool bForceLagSync;
 	bool bFuncReplacements;
-	// Compute the VFPU's dot products (vdot, vmmul, vtfm and the rest) bit-exactly like the PSP.
-	bool bAccurateVdot;
 	bool bHideSlowWarnings;
 	bool bHideStateWarnings;
 	uint32_t uJitDisableFlags;
@@ -253,6 +253,9 @@ public:
 	bool bCompressSymbols;
 	bool bCacheFullIsoInRam;
 	bool bAutoUpgradeFirmware;
+	// The game screen's "Compress game" (UI/GamePacker.h).
+	int iCSOPreset;  // CSOCompress::Preset: 0 = Best, 1 = PSP Compatible
+	bool bPackKeepOriginal;
 	int iRemoteISOPort; // Also used for serving a local remote debugger.
 	std::string sLastRemoteISOServer;
 	int iLastRemoteISOPort;
@@ -479,6 +482,7 @@ public:
 	// 0 - no tilt, 1 - analog stick, 2 - D-Pad, 3 - Action Buttons (Tri, Cross, Square, Circle)
 	int iTiltInputType;
 	bool bTiltInputEnabled;
+	bool bTiltUseGyro;
 
 	// The four tabs (including Remote last). Values from GameBrowserViewMode.
 	int iGameBrowserView1;
