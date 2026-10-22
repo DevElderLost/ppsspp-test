@@ -1091,6 +1091,8 @@ static const ConfigSetting networkSettings[] = {
 	ConfigSetting("EnableAdhocServer", SETTING(g_Config, bEnableAdhocServer), false, CfgFlag::PER_GAME),
 	ConfigSetting("proAdhocServer", SETTING(g_Config, sProAdhocServer), &DefaultProAdhocServer, CfgFlag::PER_GAME),
 	ConfigSetting("AdhocServerRelayMode", SETTING(g_Config, iAdhocServerRelayMode), (int)AdhocServerRelayMode::Auto, CfgFlag::PER_GAME),
+	ConfigSetting("AdhocUseUdp", SETTING(g_Config, bAdhocUseUdp), false, CfgFlag::PER_GAME),
+	ConfigSetting("AdhocRelayModeEnetPdpReliable", SETTING(g_Config, bAdhocRelayModeEnetPdpReliable), true, CfgFlag::PER_GAME),
 	ConfigSetting("AdhocServerShowPlayerPorts", SETTING(g_Config, bAdhocServerShowPlayerPorts), false, CfgFlag::PER_GAME),
 	ConfigSetting("PortOffset", SETTING(g_Config, iPortOffset), 10000, CfgFlag::PER_GAME),
 	ConfigSetting("PrimaryDNSServer", SETTING(g_Config, sInfrastructureDNSServer), "67.222.156.250", CfgFlag::PER_GAME),
@@ -1134,6 +1136,7 @@ static const ConfigSetting systemParamSettings[] = {
 	ConfigSetting("BypassOSKWithKeyboard", SETTING(g_Config, bBypassOSKWithKeyboard), false, CfgFlag::PER_GAME),
 	ConfigSetting("WlanPowerSave", SETTING(g_Config, bWlanPowerSave), (bool) PSP_SYSTEMPARAM_WLAN_POWERSAVE_OFF, CfgFlag::PER_GAME),
 	ConfigSetting("EncryptSave", SETTING(g_Config, bEncryptSave), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
+	ConfigSetting("VshUmdAutoboot", SETTING(g_Config, bVshUmdAutoboot), false, CfgFlag::DEFAULT),
 	ConfigSetting("MemStickSize", SETTING(g_Config, iMemStickSizeGB), 16, CfgFlag::DEFAULT),
 	ConfigSetting("FuseID", SETTING(g_Config, sFuseID), "", CfgFlag::DEFAULT),
 };

@@ -226,7 +226,7 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(timeoutWall), CmdParamType::Double, "timeout", '\0', "Alias for --timeout-wall", CmdLineMode::Headless},
 	{POFF(frameStats), CmdParamType::Bool, "frame-stats", '\0', "Print flips per emulated second at the end of the run, counted from --state's load", CmdLineMode::Headless},
 	{POFF(maxScreenshotError), CmdParamType::Double, "max-mse", '\0', "Maximum allowed MSE error for screenshot comparison", CmdLineMode::Headless},
-	{POFF(mountIso), CmdParamType::String, "mount", 'm', "Mount ISO/CSO on umd1:", CmdLineMode::Headless},
+	{POFF(mountIso), CmdParamType::String, "mount", 'm', "Mount ISO/CSO on umd1: when booting an ELF/PBP or --vsh"},
 	{POFF(unpackUpdater), CmdParamType::String, "unpack-updater", '\0', "Unpack the firmware in an updater EBOOT.PBP into DIR and exit", CmdLineMode::Headless},
 	{POFF(unpackUpdaterModel), CmdParamType::String, "unpack-updater-model", '\0', "PSP model to unpack for (01g..12g, default any)", CmdLineMode::Headless},
 	{POFF(unpackUpdaterFilter), CmdParamType::String, "unpack-updater-filter", '\0', "Only unpack entries under this path, e.g. flash0:/font/", CmdLineMode::Headless},
@@ -310,10 +310,6 @@ int CommandLineOptions::PrintUsage(const char *progname, const char *situationTe
 	PRINT_STDOUT("  --state=FILE          load state from FILE\n");
 
 	PRINT_STDOUT("  --cpu=CPU             use the specified CPU core (interpreter, ir, jit, jit-ir)\n");
-	PRINT_STDOUT("  -i                    use the interpreter\n");
-	PRINT_STDOUT("  -r                    use IR interpreter\n");
-	PRINT_STDOUT("  -j                    use JIT\n");
-	PRINT_STDOUT("  -J                    use IR JIT\n");
 
 	for (const auto &param : g_autoParams) {
 		if (param.mode != CmdLineMode::Both && param.mode != mode) {
@@ -402,19 +398,12 @@ CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], C
 			case 'h':
 				PrintUsage(argv[0], nullptr);
 				return CommandLineParseResult::Exit;
-			// Legacy cpucore options.
-			case 'j':
-				cpuCore = CPUCore::JIT;
-				break;
 			case 'i':
-				cpuCore = CPUCore::INTERPRETER;
-				break;
-			case 'r':
-				cpuCore = CPUCore::IR_INTERPRETER;
-				break;
+			case 'j':
 			case 'J':
-				cpuCore = CPUCore::JIT_IR;
-				break;
+				// Removed cpu core options. Fail rather than quietly run on the default core.
+				PRINT_STDERR("Error: %s was removed, use --cpu=interpreter, ir, jit or jit-ir.\n", argv[i]);
+				return CommandLineParseResult::Error;
 			}
 		}
 
@@ -452,12 +441,6 @@ CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], C
 			printf("%s\n", PPSSPP_GIT_VERSION);
 			return CommandLineParseResult::Exit;
 			// Commands with parameters. TODO: Should support both space and equals, like --config=foo.ini and --config foo.ini
-		} else if (equals(argv[i], "--jit-ir")) {
-			// Headless legacy
-			cpuCore = CPUCore::JIT_IR;
-		} else if (equals(argv[i], "--ir")) {
-			// Headless legacy
-			cpuCore = CPUCore::IR_INTERPRETER;
 		} else if (startsWith(argv[i], gpuBackendStr)) {
 			const std::string restOfOption = argv[i] + gpuBackendStr.size();
 			// Force software rendering off, as picking gles implies HW acceleration.

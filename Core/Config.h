@@ -611,11 +611,15 @@ public:
 	int iButtonPreference;
 	int iLockParentalLevel;
 	bool bEncryptSave;
+	// /CONFIG/SYSTEM/umd_autoboot: whether the VSH starts an inserted disc by itself.
+	bool bVshUmdAutoboot;
 
 	// Networking
 	bool bEnableAdhocServer;
 	std::string sProAdhocServer;
 	int iAdhocServerRelayMode;
+	bool bAdhocUseUdp;
+	bool bAdhocRelayModeEnetPdpReliable;
 	bool bAdhocServerShowPlayerPorts;
 	std::string sInfrastructureDNSServer;
 	std::string sInfrastructureUsername;  // Username used for Infrastructure play. Different restrictions.

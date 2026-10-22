@@ -1348,6 +1348,10 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 
 	int bytesRead = 0;
 
+	// A logic op done in the shader reads a copy of the framebuffer taken when the batch is drawn.
+	const bool readsFramebufferPerDraw = PSP_CoreParameter().compat.flags().SeparateLogicOpDraws && gstate.isLogicOpEnabled() && gstate.getLogicOp() != GE_LOGIC_COPY &&
+		!gstate_c.Use(GPU_USE_LOGIC_OP) && !gstate_c.Use(GPU_USE_FRAMEBUFFER_FETCH);
+
 	// If the first one in a batch passes, let's assume the whole batch passes.
 	// Cuts down on checking, while not losing that much efficiency.
 	bool onePassed = false;
@@ -1357,6 +1361,18 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 			drawEngineCommon_->SkipPrim(prim, count, decoder, &bytesRead);
 			canExtend = false;
 		} else if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, decoder, vertTypeID, true, &bytesRead, flags)) {
+	if (passCulling && readsFramebufferPerDraw && prim == GE_PRIM_RECTANGLES && count > 2 && !inds) {
+		// Its rectangles can overlap too.
+		const int vertexSize = decoder->VertexSize();
+		for (int i = 0; i + 1 < count; i += 2) {
+			int rectBytesRead = 0;
+			drawEngineCommon_->SubmitPrim((const u8 *)verts + i * vertexSize, nullptr, prim, 2, decoder, vertTypeID, true, &rectBytesRead, flags);
+			drawEngineCommon_->Flush();
+			bytesRead += rectBytesRead;
+		}
+		canExtend = false;
+	} else if (passCulling) {
+		if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, decoder, vertTypeID, true, &bytesRead, flags)) {
 			canExtend = false;
 		}
 		// onePassed = true;
@@ -1384,8 +1400,11 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// between each prim, we just change the triangle winding right here to still be able to join draw calls.
 	constexpr uint32_t vtypeCheckMask = ~GE_VTYPE_WEIGHTCOUNT_MASK;
 
-	if (!useFastRunLoop_)
-		goto bail;  // we're either recording or stepping.
+	if (readsFramebufferPerDraw) {
+		drawEngineCommon_->Flush();
+	}
+	if (!useFastRunLoop_ || readsFramebufferPerDraw)
+		goto bail;  // we're either recording or stepping, or each draw has to go alone.
 
 	while (src != stall) {
 		uint32_t data = *src;

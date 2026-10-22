@@ -180,7 +180,6 @@ std::string NativeLoadSecret(std::string_view nameOfSecret) {
 
 int printUsage(const CommandLineOptions &options, const char *progname, const char *reason) {
 	options.PrintUsage(progname, reason);
-	fprintf(stderr, "  --ir                  use ir interpreter\n");
 	fprintf(stderr, "  --flash0=DIR          use DIR as flash0: instead of the bundled assets (e.g. a real dump)\n");
 	return 1;
 }
@@ -1137,7 +1136,10 @@ int main(int argc, const char* argv[]) {
 	// headless has to as well or it isn't testing what ships.
 	const bool bootIsDisc = testFilenames.size() == 1 &&
 		!BootTargetIsHomebrewExecutable(testFilenames[0]);
-	if (!bootIsDisc) {
+	// The VSH is firmware, and runs the firmware's modules like the app does (its video player needs the
+	// real sceMpeg from mpeg_vsh.prx).
+	const bool bootIsVSH = cmdLineOptions.bootVSH.value_or(false);
+	if (!bootIsDisc && !bootIsVSH) {
 		g_Config.iForceEnableHLE = 0xFFFFFFFF & ~g_Config.iDisableHLE;
 	}
 

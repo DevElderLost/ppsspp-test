@@ -462,6 +462,10 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 			gameTitle = g_CoreParameter.fileToStart.GetFilename();
 		}
 		break;
+	case IdentifiedFileType::PSP_PS1_PBP:
+		// Title and disc ID; the PS1 image itself is read by the firmware's POPS manager.
+		LoadParamSFOFromPBP(fileLoader);
+		break;
 	case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
 	{
 		ERROR_LOG(Log::Loader, "PPSSPP doesn't support UMD Video.");
@@ -510,6 +514,10 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 		// Headless replays frame dumps to compare them with references and with the PSP, which a game's
 		// workarounds would skew: DarkStalkers' present hack replaces the game's final upscale.
 		g_CoreParameter.compat.Clear();
+	} else if (type == IdentifiedFileType::PSP_PS1_PBP) {
+		// The PS1 emulator's workarounds don't depend on the PS1 game it runs. Only compat.ini sees this ID:
+		// savestates, save data and everything else use the game's own ID.
+		g_CoreParameter.compat.Load(POPS_COMPAT_ID);
 	} else {
 		g_CoreParameter.compat.Load(discId);
 	}
@@ -557,8 +565,12 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	CoreTiming::Init(&mipsr4k);
 	MMIO::Init();
-	if (MeCore::Wanted(homebrew)) {
-		MeCore::Init();
+	const bool pops = type == IdentifiedFileType::PSP_PS1_PBP;
+	if (MeCore::Wanted(homebrew, pops) && !MeCore::Init() && pops) {
+		// The firmware's PS1 emulator plays its sound on the ME.
+		auto er = GetI18NCategory(I18NCat::ERRORS);
+		*errorString = er->T("PS1NoMediaEngine", "PS1 games need the PSP's Media Engine, which PPSSPP can't emulate on this platform yet.");
+		return false;
 	}
 
 	DisplayHWInit();
@@ -632,6 +644,12 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	case IdentifiedFileType::PPSSPP_GE_DUMP:
 		if (!Load_PSP_GE_Dump(fileLoader, errorString)) {
+			return false;
+		}
+		break;
+
+	case IdentifiedFileType::PSP_PS1_PBP:
+		if (!Load_PSP_POPS(fileLoader, errorString)) {
 			return false;
 		}
 		break;
