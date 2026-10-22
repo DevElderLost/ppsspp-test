@@ -1355,13 +1355,11 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// If the first one in a batch passes, let's assume the whole batch passes.
 	// Cuts down on checking, while not losing that much efficiency.
 	bool onePassed = false;
-	if (passCulling) {
-		if (shadowsActive && ShadowObservePrim(prim, verts, inds, count, decoder, vertTypeID, vertexType)) {
-			// The game's own blob shadow, replaced by the planar shadows.
-			drawEngineCommon_->SkipPrim(prim, count, decoder, &bytesRead);
-			canExtend = false;
-		} else if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, decoder, vertTypeID, true, &bytesRead, flags)) {
-	if (passCulling && readsFramebufferPerDraw && prim == GE_PRIM_RECTANGLES && count > 2 && !inds) {
+	if (shadowsActive && passCulling && ShadowObservePrim(prim, verts, inds, count, decoder, vertTypeID, vertexType)) {
+		// The game's own blob shadow, replaced by the planar shadows.
+		drawEngineCommon_->SkipPrim(prim, count, decoder, &bytesRead);
+		canExtend = false;
+	} else if (passCulling && readsFramebufferPerDraw && prim == GE_PRIM_RECTANGLES && count > 2 && !inds) {
 		// Its rectangles can overlap too.
 		const int vertexSize = decoder->VertexSize();
 		for (int i = 0; i + 1 < count; i += 2) {
