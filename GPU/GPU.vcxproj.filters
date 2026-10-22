@@ -108,6 +108,9 @@
     <ClInclude Include="Common\DrawEngineCommon.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\PlanarShadows.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\DepalettizeShaderCommon.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -360,6 +363,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\DrawEngineCommon.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\PlanarShadows.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\SplineCommon.cpp">

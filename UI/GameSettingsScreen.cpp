@@ -576,6 +576,25 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *smartFiltering = graphicsSettings->Add(new CheckBox(&g_Config.bSmart2DTexFiltering, gr->T("Smart 2D texture filtering")));
 	smartFiltering->SetDisabledPtr(&g_Config.bSoftwareRendering);
 
+	graphicsSettings->Add(new ItemHeader(gr->T("Shadows")));
+	CheckBox *planarShadows = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadows, gr->T("Planar shadows")));
+	planarShadows->SetDisabledPtr(&g_Config.bSoftwareRendering);
+	graphicsSettings->Add(new SettingHint(gr->T("Planar shadows Tip", "Experimental: adds animated silhouette shadows under skinned characters and monsters, drawn on the GPU"), planarShadows));
+	static const char *shadowQualityLevels[] = { "Low (64)", "Medium (96)", "High (192)" };
+	PopupMultiChoice *shadowQuality = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowQuality, gr->T("Shadow quality"), shadowQualityLevels, 0, ARRAY_SIZE(shadowQualityLevels), I18NCat::GRAPHICS, screenManager()));
+	shadowQuality->SetEnabledPtr(&g_Config.bPlanarShadows);
+	static const char *shadowDistances[] = { "No limit", "Short", "Medium", "Long" };
+	PopupMultiChoice *shadowDistance = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowDistance, gr->T("Shadow distance"), shadowDistances, 0, ARRAY_SIZE(shadowDistances), I18NCat::GRAPHICS, screenManager()));
+	shadowDistance->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowOpacity = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowOpacity, 0, 60, 25, gr->T("Shadow opacity"), 5, screenManager(), "%"));
+	shadowOpacity->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirX = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirX, -200, 200, 45, gr->T("Shadow direction X"), 5, screenManager()));
+	shadowDirX->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirZ = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirZ, -200, 200, 30, gr->T("Shadow direction Z"), 5, screenManager()));
+	shadowDirZ->SetEnabledPtr(&g_Config.bPlanarShadows);
+	CheckBox *shadowHide = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadowHideOriginal, gr->T("Hide original blob shadows")));
+	shadowHide->SetEnabledPtr(&g_Config.bPlanarShadows);
+
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else
@@ -832,6 +851,19 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 			screenManager()->push(new GestureMappingScreen(gamePath_));
 		});
 		gesture->SetEnabledPtr(&g_Config.bShowTouchControls);
+
+		CheckBox *cameraDrag = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraDrag, co->T("Free screen camera drag")));
+		cameraDrag->SetEnabledPtr(&g_Config.bShowTouchControls);
+		controlsSettings->Add(new SettingHint(co->T("Free screen camera drag Tip", "Drag a finger over a free part of the screen to move the right analog stick. Turn on \"Right analog stick custom\" to map it to buttons or the left stick"), cameraDrag));
+		static const char *cameraZones[] = { "Whole screen", "Right half", "Left half" };
+		PopupMultiChoice *cameraZone = controlsSettings->Add(new PopupMultiChoice(&g_Config.iTouchCameraZone, co->T("Camera drag area"), cameraZones, 0, ARRAY_SIZE(cameraZones), I18NCat::CONTROLS, screenManager()));
+		cameraZone->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		PopupSliderChoiceFloat *cameraSens = controlsSettings->Add(new PopupSliderChoiceFloat(&g_Config.fTouchCameraSensitivity, 0.1f, 5.0f, 1.0f, co->T("Camera drag sensitivity"), 0.1f, screenManager(), "x"));
+		cameraSens->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvX = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertX, co->T("Invert camera drag horizontally")));
+		cameraInvX->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvY = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertY, co->T("Invert camera drag vertically")));
+		cameraInvY->SetEnabledPtr(&g_Config.bTouchCameraDrag);
 
 		static const char *touchControlStyles[] = { "Classic", "Thin borders", "Glowing borders" };
 		View *style = controlsSettings->Add(new PopupMultiChoice(&g_Config.iTouchButtonStyle, co->T("Button style"), touchControlStyles, 0, ARRAY_SIZE(touchControlStyles), I18NCat::CONTROLS, screenManager()));

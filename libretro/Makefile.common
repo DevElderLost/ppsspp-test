@@ -555,6 +555,7 @@ SOURCES_CXX += \
 	$(GPUCOMMONDIR)/VertexDecoderHandwritten.cpp \
 	$(GPUCOMMONDIR)/GPUStateUtils.cpp \
 	$(GPUCOMMONDIR)/DrawEngineCommon.cpp \
+	$(GPUCOMMONDIR)/PlanarShadows.cpp \
 	$(GPUCOMMONDIR)/SplineCommon.cpp \
 	$(GPUCOMMONDIR)/FramebufferManagerCommon.cpp \
 	$(GPUCOMMONDIR)/PresentationCommon.cpp \

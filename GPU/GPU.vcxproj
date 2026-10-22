@@ -265,6 +265,7 @@
     <ClInclude Include="Common\ReinterpretFramebuffer.h" />
     <ClInclude Include="Common\DepalettizeShaderCommon.h" />
     <ClInclude Include="Common\DrawEngineCommon.h" />
+    <ClInclude Include="Common\PlanarShadows.h" />
     <ClInclude Include="Common\FragmentShaderGenerator.h" />
     <ClInclude Include="Common\FramebufferManagerCommon.h" />
     <ClInclude Include="Common\GPUDebugInterface.h" />
@@ -372,6 +373,7 @@
     <ClCompile Include="Common\ReinterpretFramebuffer.cpp" />
     <ClCompile Include="Common\DepalettizeShaderCommon.cpp" />
     <ClCompile Include="Common\DrawEngineCommon.cpp" />
+    <ClCompile Include="Common\PlanarShadows.cpp" />
     <ClCompile Include="Common\FragmentShaderGenerator.cpp" />
     <ClCompile Include="Common\FramebufferManagerCommon.cpp" />
     <ClCompile Include="Common\GPUDebugInterface.cpp" />

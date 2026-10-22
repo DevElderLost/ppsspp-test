@@ -1,8 +1,12 @@
 #pragma once
 
+#include <vector>
+
 #include "GPUCommon.h"
+#include "GPU/Common/PlanarShadows.h"
 
 class StringWriter;
+class VertexDecoder;
 
 // Shared GPUCommon implementation for the HW backends.
 // Things that are irrelevant for SoftGPU should live here.
@@ -75,6 +79,22 @@ public:
 private:
 	void CheckDepthUsage(VirtualFramebuffer *vfb) override;
 	void CheckFlushOp(int cmd, u32 diff);
+
+	// Planar shadows, see GPU/Common/PlanarShadows.h.
+	void ShadowUpdateOptions();
+	void ShadowEndFrame();
+	void ShadowBeforePrim();
+	bool ShadowObservePrim(GEPrimitiveType prim, const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType);
+	bool ShadowIsOriginalBlob(GEPrimitiveType prim, const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType);
+	bool ShadowDecodeWorld(const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType, u16 &lower, int &decodeCount);
+	void ShadowInject(u32 target);
+
+	PlanarShadows planarShadows_;
+	std::vector<PlanarShadowVertex> shadowVerts_;
+	std::vector<u8> shadowDecoded_;
+	std::vector<PlanarShadows::Triangle> shadowTris_;
+	std::vector<PlanarShadows::Point> shadowPoints_;
+	bool shadowInjecting_ = false;
 
 protected:
 	void FormatGPUStatsCommon(StringWriter &w);

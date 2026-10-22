@@ -1,11 +1,8 @@
 name: Generate Docker Layer
 
+# Only an APK and a Linux aarch64 AppImage are published by this fork, so this only runs by hand.
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - "v*.*"
+  workflow_dispatch:
 
 jobs:
   build:

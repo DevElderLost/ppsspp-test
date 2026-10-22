@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
 #include "Common/Profiler/Profiler.h"
 
 #include "Common/GPU/thin3d.h"
@@ -14,6 +18,9 @@
 #include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
+#include "GPU/Common/VertexDecoderCommon.h"
+#include "GPU/Common/VertexReader.h"
+#include "GPU/GPUState.h"
 
 struct CommonCommandTableEntry {
 	uint8_t cmd;
@@ -503,10 +510,315 @@ void GPUCommonHW::PreExecuteOp(u32 op, u32 diff) {
 	CheckFlushOp(op >> 24, diff);
 }
 
+// ---- Planar shadows ----------------------------------------------------------------------------
+// The collection of casters and receivers and the shadow geometry live in GPU/Common/PlanarShadows.
+// This is the glue that feeds it from the draw calls and draws what it produces, on every backend:
+// the shadow is an ordinary alpha blended triangle list that goes through the normal draw engine,
+// with the scene's own matrices and viewport, so it is depth tested against the real scene.
+
+// Registers of the 3D draw that the shadow draw must reproduce. A 2D draw (through mode) that
+// triggers the shadows may have left different values in them.
+static const u8 kShadowSceneCmds[] = {
+	GE_CMD_VIEWPORTXSCALE, GE_CMD_VIEWPORTYSCALE, GE_CMD_VIEWPORTZSCALE,
+	GE_CMD_VIEWPORTXCENTER, GE_CMD_VIEWPORTYCENTER, GE_CMD_VIEWPORTZCENTER,
+	GE_CMD_OFFSETX, GE_CMD_OFFSETY, GE_CMD_MINZ, GE_CMD_MAXZ,
+	GE_CMD_SCISSOR1, GE_CMD_SCISSOR2, GE_CMD_REGION1, GE_CMD_REGION2,
+};
+static_assert(ARRAY_SIZE(kShadowSceneCmds) <= PlanarShadows::Scene::kRegs, "Scene::regs is too small");
+
+// Draws smaller than this many vertices go in one SubmitPrim call. It is a multiple of three and far
+// below VERTEX_BUFFER_MAX, SubmitPrim would otherwise split a triangle list at an arbitrary vertex.
+static const size_t kShadowSubmitChunk = 30000;
+
+void GPUCommonHW::ShadowUpdateOptions() {
+	static const unsigned kResolutions[3] = { 64, 96, 192 };
+	PlanarShadowOptions o;
+	o.enabled = g_Config.bPlanarShadows && !g_Config.bSoftwareRendering;
+	o.resolution = kResolutions[std::clamp(g_Config.iPlanarShadowQuality, 0, 2)];
+	o.lod = (unsigned)std::clamp(g_Config.iPlanarShadowDistance, 0, 3);
+	o.opacity = std::clamp(g_Config.iPlanarShadowOpacity, 0, 60) * 0.01f;
+	o.directionX = std::clamp(g_Config.iPlanarShadowDirX, -200, 200) * 0.01f;
+	o.directionZ = std::clamp(g_Config.iPlanarShadowDirZ, -200, 200) * 0.01f;
+	o.floorOffset = 0.0f;
+	o.hideOriginal = g_Config.bPlanarShadowHideOriginal;
+	planarShadows_.SetOptions(o);
+}
+
+void GPUCommonHW::ShadowEndFrame() {
+	// A scene that no 2D draw followed (a cutscene without HUD, say) still gets its shadows, as long as
+	// its target is the one being presented. Anything else that is left over is dropped.
+	if (planarShadows_.Options().enabled && !shadowInjecting_) {
+		const VirtualFramebuffer *vfb = framebufferManager_->GetCurrentRenderVFB();
+		const u32 current = gstate.getFrameBufAddress() & 0x3FFFFFFF;
+		if (vfb && (vfb->fb_address & 0x3FFFFFFF) == current && !(gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB))) {
+			for (u32 target : planarShadows_.PendingTargets()) {
+				if ((target & 0x3FFFFFFF) == current)
+					ShadowInject(target);
+			}
+		}
+	}
+	planarShadows_.Reset();
+	ShadowUpdateOptions();
+}
+
+// Called at the start of each draw, when shadows are enabled.
+void GPUCommonHW::ShadowBeforePrim() {
+	if (shadowInjecting_)
+		return;
+	const u32 target = gstate.getFrameBufAddress();
+	if (gstate.isModeClear()) {
+		planarShadows_.DropTarget(target);
+	} else if (gstate.isModeThrough()) {
+		ShadowInject(target);
+	}
+}
+
+// Decodes a draw into world space points in shadowPoints_. Skinning is applied here when the
+// decoder did not do it. Returns false when the draw is unusable.
+bool GPUCommonHW::ShadowDecodeWorld(const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType, u16 &lower, int &decodeCount) {
+	lower = 0;
+	u16 upper = (u16)std::min(count - 1, 0xFFFF);
+	if ((vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
+		GetIndexBounds(inds, count, vertTypeID, &lower, &upper);
+	}
+	decodeCount = (int)upper - (int)lower + 1;
+	// Bound the work done per draw, this runs on the GPU thread for every 3D draw.
+	if (decodeCount <= 0 || decodeCount > 16384)
+		return false;
+
+	const DecVtxFormat &fmt = dec->GetDecVtxFmt();
+	const int stride = fmt.stride;
+	// DecodeVerts may write a bit past the end.
+	shadowDecoded_.resize((size_t)decodeCount * stride + 256);
+	const UVScale uvScale{ 1.0f, 1.0f, 0.0f, 0.0f };
+	dec->DecodeVerts(shadowDecoded_.data(), (const u8 *)verts + (size_t)lower * dec->VertexSize(), &uvScale, decodeCount);
+
+	// Bone matrices are only applied by the decoder when it skins in software. With hardware
+	// skinning the weights are left in the decoded vertex and are applied here.
+	const bool weighted = (vertType & GE_VTYPE_WEIGHT_MASK) != 0;
+	const bool skinHere = weighted && !dec->skinInDecode && dec->nweights > 0;
+	const int numWeights = std::min<int>(dec->nweights, 8);
+	const float *world = gstate.worldMatrix;
+
+	shadowPoints_.resize(decodeCount);
+	for (int i = 0; i < decodeCount; i++) {
+		const u8 *vertex = shadowDecoded_.data() + (size_t)i * stride;
+		const float *pos = (const float *)(vertex + fmt.posoff);
+		float local[3] = { pos[0], pos[1], pos[2] };
+		if (skinHere) {
+			float w[8]{};
+			VertexReader reader(vertex, fmt, vertType);
+			reader.ReadWeights(w);
+			float skin[12]{};
+			for (int j = 0; j < numWeights; j++) {
+				const float *bone = gstate.boneMatrix + j * 12;
+				for (int k = 0; k < 12; k++)
+					skin[k] += w[j] * bone[k];
+			}
+			local[0] = pos[0] * skin[0] + pos[1] * skin[3] + pos[2] * skin[6] + skin[9];
+			local[1] = pos[0] * skin[1] + pos[1] * skin[4] + pos[2] * skin[7] + skin[10];
+			local[2] = pos[0] * skin[2] + pos[1] * skin[5] + pos[2] * skin[8] + skin[11];
+		}
+		PlanarShadows::Point &out = shadowPoints_[i];
+		for (int k = 0; k < 3; k++) {
+			out[k] = local[0] * world[k] + local[1] * world[3 + k] + local[2] * world[6 + k] + world[9 + k];
+			if (!std::isfinite(out[k]) || std::abs(out[k]) > 1e7f)
+				return false;
+		}
+	}
+	return true;
+}
+
+// The round blob shadow Monster Hunter Portable 3rd draws under actors: a small flat quad, textured with
+// a 64x64 CLUT8 mask, alpha blended without writing depth, unlit, with no vertex color and a black material.
+// The state check is cheap and runs first, only draws that match it get decoded.
+bool GPUCommonHW::ShadowIsOriginalBlob(GEPrimitiveType prim, const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType) {
+	if (prim != GE_PRIM_TRIANGLES && prim != GE_PRIM_TRIANGLE_STRIP)
+		return false;
+	if (count < 3 || count > 256 || dec->morphcount > 1)
+		return false;
+	if (vertType & (GE_VTYPE_WEIGHT_MASK | GE_VTYPE_COL_MASK))
+		return false;
+	if (!gstate.isDepthTestEnabled() || gstate.isDepthWriteEnabled() || gstate.getDepthTestFunction() != GE_COMP_LEQUAL)
+		return false;
+	if (!gstate.isAlphaBlendEnabled() || gstate.getBlendEq() != GE_BLENDMODE_MUL_AND_ADD ||
+		gstate.getBlendFuncA() != GE_SRCBLEND_SRCALPHA || gstate.getBlendFuncB() != GE_DSTBLEND_INVSRCALPHA)
+		return false;
+	if (!gstate.isTextureMapEnabled() || gstate.getTextureWidth(0) != 64 || gstate.getTextureHeight(0) != 64 ||
+		gstate.getTextureFormat() != GE_TFMT_CLUT8 || gstate.getTextureFunction() != GE_TEXFUNC_MODULATE ||
+		!gstate.isTextureAlphaUsed() || !gstate.isAlphaTestEnabled() || gstate.isLightingEnabled())
+		return false;
+	if ((gstate.getMaterialAmbientRGBA() & 0x00FFFFFF) != 0 || gstate.getMaterialAmbientA() == 0)
+		return false;
+
+	u16 lower;
+	int decodeCount;
+	if (!ShadowDecodeWorld(verts, inds, count, dec, vertTypeID, vertType, lower, decodeCount))
+		return false;
+	float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+	for (const PlanarShadows::Point &p : shadowPoints_) {
+		for (int k = 0; k < 3; k++) {
+			lo[k] = std::min(lo[k], p[k]);
+			hi[k] = std::max(hi[k], p[k]);
+		}
+	}
+	return hi[1] - lo[1] <= 0.05f && hi[0] - lo[0] > 0.01f && hi[2] - lo[2] > 0.01f;
+}
+
+// Collects the triangles of one 3D draw, in world space, as a caster or a receiver.
+// Returns true when the draw is the game's own blob shadow and should not be drawn.
+bool GPUCommonHW::ShadowObservePrim(GEPrimitiveType prim, const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType) {
+	if (shadowInjecting_ || gstate.isModeThrough() || gstate.isModeClear())
+		return false;
+	const PlanarShadowOptions &options = planarShadows_.Options();
+	if (options.hideOriginal && options.opacity > 0.0f && ShadowIsOriginalBlob(prim, verts, inds, count, dec, vertTypeID, vertType))
+		return true;
+	if (!gstate.isDepthTestEnabled() || !gstate.isDepthWriteEnabled())
+		return false;
+	if (prim != GE_PRIM_TRIANGLES && prim != GE_PRIM_TRIANGLE_STRIP && prim != GE_PRIM_TRIANGLE_FAN)
+		return false;
+	if (count < 3 || dec->morphcount > 1)
+		return false;
+	const u32 target = gstate.getFrameBufAddress();
+
+	// Skinned (weighted) opaque draws are casters, unskinned ones are receiver candidates.
+	const bool weighted = (vertType & GE_VTYPE_WEIGHT_MASK) != 0;
+	if (weighted && gstate.isAlphaBlendEnabled())
+		return false;
+	// Once the per frame limits are reached there is nothing to gain from decoding more.
+	if (weighted ? !planarShadows_.WantsCasters(target) : !planarShadows_.WantsReceivers(target))
+		return false;
+
+	u16 lower;
+	int decodeCount;
+	if (!ShadowDecodeWorld(verts, inds, count, dec, vertTypeID, vertType, lower, decodeCount))
+		return false;
+
+	// Assemble triangles.
+	shadowTris_.clear();
+	IndexConverter conv(vertType, inds);
+	const auto fetch = [&](int i) -> const PlanarShadows::Point & {
+		const int index = (int)conv((u32)i) - (int)lower;
+		return shadowPoints_[std::clamp(index, 0, decodeCount - 1)];
+	};
+	const int step = prim == GE_PRIM_TRIANGLES ? 3 : 1;
+	for (int i = 0; i + 2 < count; i += step) {
+		const int a = prim == GE_PRIM_TRIANGLE_FAN ? 0 : i;
+		shadowTris_.push_back(PlanarShadows::Triangle{ fetch(a), fetch(i + 1), fetch(i + 2) });
+	}
+
+	PlanarShadows::Scene scene;
+	scene.target = target;
+	memcpy(scene.view, gstate.viewMatrix, sizeof(scene.view));
+	memcpy(scene.proj, gstate.projMatrix, sizeof(scene.proj));
+	scene.depthFunc = gstate.cmdmem[GE_CMD_ZTEST] & 0xFFFFFF;
+	for (size_t i = 0; i < ARRAY_SIZE(kShadowSceneCmds); i++)
+		scene.regs[i] = gstate.cmdmem[kShadowSceneCmds[i]] & 0xFFFFFF;
+	if (weighted) {
+		planarShadows_.AddCaster(scene, gstate.worldMatrix, shadowTris_);
+	} else {
+		planarShadows_.AddReceiver(scene, shadowTris_);
+	}
+	return false;
+}
+
+// Draws the shadows of the scene collected for this render target.
+void GPUCommonHW::ShadowInject(u32 target) {
+	PlanarShadows::Scene scene;
+	if (!planarShadows_.Build(target, shadowVerts_, &scene) || shadowVerts_.empty())
+		return;
+
+	// Everything queued so far belongs to the scene and must be drawn with the scene's state.
+	drawEngineCommon_->Flush();
+	shadowInjecting_ = true;
+
+	// The state this draw changes. Restored afterwards, through the normal command path so that the
+	// dirty flags and the flushes of the backends see ordinary state changes.
+	static const u8 kCmds[] = {
+		GE_CMD_VERTEXTYPE, GE_CMD_ZTESTENABLE, GE_CMD_ZTEST, GE_CMD_ZWRITEDISABLE, GE_CMD_ALPHABLENDENABLE, GE_CMD_BLENDMODE,
+		GE_CMD_ALPHATESTENABLE, GE_CMD_COLORTESTENABLE, GE_CMD_STENCILTESTENABLE, GE_CMD_LOGICOPENABLE,
+		GE_CMD_LIGHTINGENABLE, GE_CMD_FOGENABLE, GE_CMD_TEXTUREMAPENABLE, GE_CMD_CULLFACEENABLE, GE_CMD_MASKRGB, GE_CMD_MASKALPHA,
+	};
+	constexpr size_t kNumCmds = ARRAY_SIZE(kCmds);
+	constexpr size_t kNumScene = ARRAY_SIZE(kShadowSceneCmds);
+	u32 saved[kNumCmds + kNumScene];
+	for (size_t i = 0; i < kNumCmds; i++)
+		saved[i] = gstate.cmdmem[kCmds[i]] & 0xFFFFFF;
+	for (size_t i = 0; i < kNumScene; i++)
+		saved[kNumCmds + i] = gstate.cmdmem[kShadowSceneCmds[i]] & 0xFFFFFF;
+
+	const auto setCmd = [&](u8 cmd, u32 data) {
+		const u32 op = ((u32)cmd << 24) | (data & 0xFFFFFF);
+		const u32 diff = op ^ gstate.cmdmem[cmd];
+		if (!diff)
+			return;
+		PreExecuteOp(op, diff);
+		gstate.cmdmem[cmd] = op;
+		ExecuteOp(op, diff);
+	};
+
+	const u32 shadowVertType = GE_VTYPE_COL_8888 | GE_VTYPE_POS_FLOAT;
+	setCmd(GE_CMD_VERTEXTYPE, shadowVertType);
+	setCmd(GE_CMD_ZTESTENABLE, 1);
+	setCmd(GE_CMD_ZTEST, scene.depthFunc);
+	setCmd(GE_CMD_ZWRITEDISABLE, 1);
+	setCmd(GE_CMD_ALPHABLENDENABLE, 1);
+	setCmd(GE_CMD_BLENDMODE, (u32)GE_SRCBLEND_SRCALPHA | ((u32)GE_DSTBLEND_INVSRCALPHA << 4) | ((u32)GE_BLENDMODE_MUL_AND_ADD << 8));
+	setCmd(GE_CMD_ALPHATESTENABLE, 0);
+	setCmd(GE_CMD_COLORTESTENABLE, 0);
+	setCmd(GE_CMD_STENCILTESTENABLE, 0);
+	setCmd(GE_CMD_LOGICOPENABLE, 0);
+	setCmd(GE_CMD_LIGHTINGENABLE, 0);
+	setCmd(GE_CMD_FOGENABLE, 0);
+	setCmd(GE_CMD_TEXTUREMAPENABLE, 0);
+	setCmd(GE_CMD_CULLFACEENABLE, 0);
+	setCmd(GE_CMD_MASKRGB, 0);        // The shadow has to be able to write color,
+	setCmd(GE_CMD_MASKALPHA, 0xFF);   // but leaves the framebuffer alpha alone.
+	// Viewport, depth range and scissor of the scene: depth is compared against the scene's depth.
+	for (size_t i = 0; i < kNumScene; i++)
+		setCmd(kShadowSceneCmds[i], scene.regs[i]);
+
+	// The scene's view and projection, with an identity world matrix: the shadow is in world space.
+	float savedWorld[12], savedView[12], savedProj[16];
+	memcpy(savedWorld, gstate.worldMatrix, sizeof(savedWorld));
+	memcpy(savedView, gstate.viewMatrix, sizeof(savedView));
+	memcpy(savedProj, gstate.projMatrix, sizeof(savedProj));
+	static const float kIdentity[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
+	const uint64_t matrixDirty = DIRTY_WORLDMATRIX | DIRTY_VIEWMATRIX | DIRTY_PROJMATRIX | DIRTY_VIEW_PROJ_MATRIX | DIRTY_WORLD_VIEW_PROJ_MATRIX | DIRTY_CULL_MATRIX;
+	memcpy(gstate.worldMatrix, kIdentity, sizeof(kIdentity));
+	memcpy(gstate.viewMatrix, scene.view, sizeof(scene.view));
+	memcpy(gstate.projMatrix, scene.proj, sizeof(scene.proj));
+	gstate_c.Dirty(matrixDirty);
+	UpdateMatrixProducts();
+
+	const u32 vertTypeID = GetVertTypeID(shadowVertType, gstate.getUVGenMode());
+	VertexDecoder *decoder = drawEngineCommon_->GetVertexDecoder(vertTypeID);
+	// shadowVerts_ stays alive and untouched until the Flush after each part has decoded it. A shadow
+	// can have more vertices than one draw may hold, so it goes in parts that end on a triangle.
+	for (size_t start = 0; start < shadowVerts_.size(); start += kShadowSubmitChunk) {
+		const int partCount = (int)std::min(kShadowSubmitChunk, shadowVerts_.size() - start);
+		int bytesRead = 0;
+		drawEngineCommon_->SubmitPrim(shadowVerts_.data() + start, nullptr, GE_PRIM_TRIANGLES, partCount, decoder, vertTypeID, true, &bytesRead, DrawEngineCommon::UncheckedClipInfoFlags());
+		drawEngineCommon_->Flush();
+	}
+
+	memcpy(gstate.worldMatrix, savedWorld, sizeof(savedWorld));
+	memcpy(gstate.viewMatrix, savedView, sizeof(savedView));
+	memcpy(gstate.projMatrix, savedProj, sizeof(savedProj));
+	gstate_c.Dirty(matrixDirty);
+	UpdateMatrixProducts();
+
+	for (size_t i = 0; i < kNumCmds + kNumScene; i++)
+		setCmd(i < kNumCmds ? kCmds[i] : kShadowSceneCmds[i - kNumCmds], saved[i]);
+
+	shadowInjecting_ = false;
+}
+
 void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) {
 	drawEngineCommon_->FlushQueuedDepth();
 	// Flush anything left over.
 	drawEngineCommon_->Flush();
+	ShadowEndFrame();
 
 	// after this, render pass is active.
 	framebufferManager_->PrepareCopyDisplayToOutput(config, curFramebufferDirty_);
@@ -947,6 +1259,12 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 		return;
 	}
 
+	// Planar shadows are drawn right before the first 2D draw that follows the 3D scene.
+	const bool shadowsActive = planarShadows_.Options().enabled;
+	if (shadowsActive) {
+		ShadowBeforePrim();
+	}
+
 	CheckDepthUsage(vfb);
 
 	const void *verts = Memory::GetPointerUnchecked(gstate_c.vertexAddr);
@@ -954,7 +1272,8 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 
 	const bool isTriangle = IsTrianglePrim(prim);
 
-	bool canExtend = isTriangle;
+	// Merged draws are never seen by SubmitPrim as separate draws, so shadows turn extending off.
+	bool canExtend = isTriangle && !shadowsActive;
 	GEVertexType vertexType = (GEVertexType)gstate.vertType;
 	if ((vertexType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		u32 indexAddr = gstate_c.indexAddr;
@@ -1036,7 +1355,11 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// If the first one in a batch passes, let's assume the whole batch passes.
 	// Cuts down on checking, while not losing that much efficiency.
 	bool onePassed = false;
-	if (passCulling && readsFramebufferPerDraw && prim == GE_PRIM_RECTANGLES && count > 2 && !inds) {
+	if (shadowsActive && passCulling && ShadowObservePrim(prim, verts, inds, count, decoder, vertTypeID, vertexType)) {
+		// The game's own blob shadow, replaced by the planar shadows.
+		drawEngineCommon_->SkipPrim(prim, count, decoder, &bytesRead);
+		canExtend = false;
+	} else if (passCulling && readsFramebufferPerDraw && prim == GE_PRIM_RECTANGLES && count > 2 && !inds) {
 		// Its rectangles can overlap too.
 		const int vertexSize = decoder->VertexSize();
 		for (int i = 0; i + 1 < count; i += 2) {
@@ -1119,7 +1442,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 				inds = Memory::GetPointerUnchecked(indexAddr);
 			} else {
 				// We can extend again after submitting a normal draw.
-				canExtend = isTriangle;
+				canExtend = isTriangle && !shadowsActive;
 			}
 
 			bool passCulling = onePassed || PASSES_CULLING;
@@ -1139,7 +1462,10 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 				if (vertexType & GE_VTYPE_THROUGH_MASK) {
 					cyclesExecuted += EstimateFillCycles(newPrim, verts, inds, count, decoder, vertexType);
 				}
-				if (!drawEngineCommon_->SubmitPrim(verts, inds, newPrim, count, decoder, vertTypeID, clockwise, &bytesRead, flags)) {
+				if (shadowsActive && ShadowObservePrim(newPrim, verts, inds, count, decoder, vertTypeID, vertexType)) {
+					drawEngineCommon_->SkipPrim(newPrim, count, decoder, &bytesRead);
+					canExtend = false;
+				} else if (!drawEngineCommon_->SubmitPrim(verts, inds, newPrim, count, decoder, vertTypeID, clockwise, &bytesRead, flags)) {
 					canExtend = false;
 				}
 				// As soon as one passes, assume we don't need to check the rest of this batch.
