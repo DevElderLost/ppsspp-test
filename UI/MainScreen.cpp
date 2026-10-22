@@ -39,6 +39,7 @@
 #include "UI/BackgroundAudio.h"
 #include "UI/EmuScreen.h"
 #include "UI/MainScreen.h"
+#include "UI/GamePacker.h"
 #include "UI/GameScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GameSettingsScreen.h"
@@ -61,6 +62,12 @@
 bool MainScreen::showHomebrewTab = false;
 
 static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, const Path &path) {
+	if (GamePacker::IsPacking(path)) {
+		// Can't play it while it's read (and maybe replaced), so show its progress instead.
+		screenManager->push(new GameScreen(path, false));
+		return;
+	}
+
 	std::string extension = path.GetFileExtension();
 	if (extension == ".zip" || extension == ".7z") {
 		// If is a zip file, we have a screen for that.
@@ -142,6 +149,7 @@ static bool IsTempPath(const Path &str) {
 
 MainScreen::MainScreen() {
 	g_BackgroundAudio.SetGame(Path());
+	packGeneration_ = GamePacker::Generation();
 }
 
 MainScreen::~MainScreen() {
@@ -626,6 +634,18 @@ void MainScreen::update() {
 	UIScreen::update();
 	UpdateUIState(UISTATE_MENU);
 
+	if (packGeneration_ != GamePacker::Generation()) {
+		// A pack finished: a new file, and maybe the original gone.
+		packGeneration_ = GamePacker::Generation();
+		const GamePacker::Result result = GamePacker::LastResult();
+		if (restoreFocusGamePath_ == result.oldPath) {
+			restoreFocusGamePath_ = result.newPath;
+		}
+		for (auto browser : gameBrowsers_) {
+			browser->RequestRefresh();
+		}
+	}
+
 	if (searchChanged_) {
 		for (auto browser : gameBrowsers_) {
 			if (browser->GetVisibility() == UI::V_VISIBLE) {
@@ -886,7 +906,7 @@ void UmdReplaceScreen::CreateViews() {
 		rightColumnItems->Add(new Choice(mm->T("Load", "Load...")))->OnClick.Add([&](UI::EventParams &e) {
 			auto mm = GetI18NCategory(I18NCat::MAINMENU);
 			System_BrowseForFile(GetRequesterToken(), mm->T("Load"), BrowseFileType::BOOTABLE, [this](std::string_view value, int) {
-				__UmdReplace(Path(value));
+				UseDisc(Path(value));
 				TriggerFinish(DR_OK);
 			});
 		});
@@ -913,8 +933,19 @@ void UmdReplaceScreen::update() {
 }
 
 void UmdReplaceScreen::OnGameSelected(UI::EventParams &e) {
-	__UmdReplace(Path(e.s));
+	UseDisc(Path(e.s));
 	TriggerFinish(DR_OK);
+}
+
+void UmdReplaceScreen::UseDisc(const Path &path) {
+	if (!insert_) {
+		__UmdReplace(path);
+		return;
+	}
+	std::string error;
+	if (!__UmdInsert(path, &error)) {
+		g_OSD.Show(OSDType::MESSAGE_ERROR, error);
+	}
 }
 
 void UmdReplaceScreen::OnGameSettings(UI::EventParams &e) {
