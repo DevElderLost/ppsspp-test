@@ -40,6 +40,8 @@ namespace Draw {
 	class Texture;
 }
 
+// pre-declare.
+enum class RoundCorners : uint8_t;
 
 // I don't generally like namespaces but I think we do need one for UI, so many potentially-clashing names.
 namespace UI {
@@ -116,6 +118,9 @@ struct Theme {
 	uint32_t scrollbarColor;
 	uint32_t popupSliderColor;
 	uint32_t popupSliderFocusedColor;
+
+	// TODO: Should it be here?
+	float choiceRoundRadius = 16.0f;
 };
 
 // The four cardinal directions should be enough, plus Prev/Next in "element order".
@@ -430,6 +435,9 @@ public:
 	virtual bool SubviewFocused(View *view) { return false; }
 	virtual bool CanMoveFocus(FocusMove dir) const { return true; }
 
+	virtual void SetRoundCorners(RoundCorners corners) { roundCorners_ = corners; }
+	virtual RoundCorners GetRoundCorners() const { return roundCorners_; }
+
 	void SetPopupStyle(bool popupStyle) { popupStyle_ = popupStyle; }
 
 	bool HasFocus() const {
@@ -470,6 +478,9 @@ public:
 
 	const std::string &Tag() const { return tag_; }
 	void SetTag(std::string_view str) { tag_ = str; }
+
+	// The group this view was added to, if any.
+	ViewGroup *Parent() const { return parent_; }
 
 	// Fake RTTI
 	virtual bool IsViewGroup() const { return false; }
@@ -516,8 +527,12 @@ protected:
 	bool popupStyle_ = false;
 	bool hasAutoResult_ = false;
 	DialogResult autoResult_ = DR_OK;
+	RoundCorners roundCorners_{};
 
 private:
+	friend class ViewGroup;  // Sets parent_.
+	ViewGroup *parent_ = nullptr;
+
 	std::function<bool()> enabledFunc_;
 	bool *enabledPtr_ = nullptr;
 	bool enabled_ = true;

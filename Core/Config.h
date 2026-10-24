@@ -85,6 +85,7 @@ struct DisplayLayoutConfig : public ConfigBlock {
 	int iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL;  // The internal screen rotation angle. Useful for vertical SHMUPs and similar.
 	bool bRotateControlsWithScreen = true;  // Rotate gamepad controls along with the internal screen rotation.
 	bool bIgnoreScreenInsets = true;  // Android: Center screen disregarding insets if this is enabled.
+	std::string sOverlay;  // Overlay (bezel) image id, see GPU/Common/Overlay.h. Empty means off.
 
 	// Deprecated
 	bool bEnableCardboardVR = false; // Cardboard Master Switch
@@ -279,6 +280,12 @@ public:
 
 	std::string sReportHost;
 	std::vector<std::string> vPinnedPaths;
+	// Android: the content URIs that home screen shortcuts were most recently created for or launched with, newest
+	// first. Their file grants are never released (see ContentUri.manageUriGrants).
+	std::vector<std::string> vShortcutUris;
+	static constexpr int MAX_SHORTCUT_URIS = 64;  // An eighth of Android's limit on persisted URI grants.
+	// Moves the URI to the front. Returns true if it wasn't in the list before.
+	bool AddShortcutUri(std::string_view uri);
 	std::string sLanguageIni;
 
 	std::string sIgnoreCompatSettings;
@@ -287,6 +294,7 @@ public:
 
 	// GFX
 	int iGPUBackend;
+	int iExternalDisplay;  // ExternalDisplayMode
 	std::string sCustomDriver;
 	std::string sFailedGPUBackends;  // NOT stored in ppsspp.ini anymore!
 	std::string sDisabledGPUBackends;
@@ -360,9 +368,14 @@ public:
 	int iTexScalingType; // 0 = xBRZ, 1 = Hybrid
 	bool bTexDeposterize;
 	bool bTexHardwareScaling;
-	int iFpsLimit1;
-	int iFpsLimit2;
-	int iAnalogFpsLimit;
+	// In percent of normal speed. 0 means unlimited, and negative (not for analog) disabled.
+	int iAltSpeedPercent1;
+	int iAltSpeedPercent2;
+	int iAnalogAltSpeedPercent;
+	// The old frame rate based settings. Only read, to migrate them.
+	int iLegacyFpsLimit1;
+	int iLegacyFpsLimit2;
+	int iLegacyAnalogFpsLimit;
 	int iMaxRecent;
 	int iCurrentStateSlot;
 	int iRewindSnapshotInterval;
@@ -757,6 +770,8 @@ public:
 
 	bool HasGameConfig(std::string_view gameId);
 	bool IsGameSpecific() const { return !gameId_.empty(); }
+	// False if the last Load() couldn't read the ini (missing, or the memory stick isn't reachable) and fell back to defaults.
+	bool LoadedFromFile() const { return loadedFromFile_; }
 
 	void SetSearchPath(const Path &path);
 
@@ -823,6 +838,7 @@ private:
 	// Always the paths to the main configs, doesn't change with game-specific overlay.
 	Path iniFilename_;
 	Path controllerIniFilename_;
+	bool loadedFromFile_ = false;
 
 	Path searchPath_;
 	Path appendedConfigFileName_;
@@ -835,6 +851,15 @@ private:
 
 std::string CreateRandMAC();
 std::string DefaultProAdhocServer();
+
+// The frame rate limit for an alternative speed. Unlimited (0) and disabled (negative) stay as they are.
+inline int AltSpeedPercentToFps(int percent) {
+	if (percent <= 0) {
+		return percent;
+	}
+	int fps = (percent * 60 + 50) / 100;
+	return fps < 1 ? 1 : fps;
+}
 
 // TODO: Find a better place for this.
 extern http::RequestManager g_DownloadManager;

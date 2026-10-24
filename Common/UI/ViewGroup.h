@@ -53,11 +53,13 @@ public:
 	template <class T>
 	T *Add(T *view) {
 		views_.push_back(view);
+		SetParentOf(view);
 		return view;
 	}
 	template <class T>
 	T *Insert(int index, T *view) {
 		views_.insert(views_.begin() + index, view);
+		SetParentOf(view);
 		return view;
 	}
 
@@ -107,6 +109,9 @@ public:
 protected:
 	std::string DescribeListUnordered(std::string_view heading) const;
 	std::string DescribeListOrdered(std::string_view heading) const;
+
+	// Anything that adds to views_ without Add or Insert must call this.
+	void SetParentOf(View *view) { view->parent_ = this; }
 
 	std::vector<View *> views_;
 	View *defaultFocusView_ = nullptr;
@@ -237,7 +242,21 @@ public:
 		: LinearLayout(orientation, layoutParams) {
 	}
 
+	// The only difference with a LinearLayout is the DescribeText, which is a list of the items in the layout.
+	// Not sure if we really need this.
 	std::string DescribeText() const override;
+};
+
+// These are pretty vertical LinearLayout, with a title and a roundrect background.
+class ChoiceGroup : public LinearLayout {
+public:
+	ChoiceGroup(std::string_view title, LayoutParams *layoutParams = nullptr);
+
+	void Draw(UIContext &dc) override;
+
+private:
+	std::string title_;
+	bool finished_ = false;
 };
 
 // GridLayout is a little different from the Android layout. This one has fixed size

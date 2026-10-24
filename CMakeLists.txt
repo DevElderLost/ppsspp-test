@@ -960,6 +960,8 @@ elseif(IOS AND NOT LIBRETRO)
 		ios/AppDelegate.h
 		ios/SceneDelegate.mm
 		ios/SceneDelegate.h
+		ios/ExternalDisplaySceneDelegate.mm
+		ios/ExternalDisplaySceneDelegate.h
 		ios/Controls.h
 		ios/Controls.mm
 		ios/ViewController.h
@@ -1003,6 +1005,7 @@ elseif(IOS AND NOT LIBRETRO)
 	# TODO: Enable arc globally?
 	set_source_files_properties(ios/AppDelegate.mm
 		ios/SceneDelegate.mm
+		ios/ExternalDisplaySceneDelegate.mm
 		ios/ViewController.mm
 		ios/iOSCoreAudio.mm
 		ios/IAPManager.mm
@@ -1422,6 +1425,7 @@ if(UNITTEST)
 		unittest/TestVertexJit.h
 		unittest/TestVFS.cpp
 		unittest/TestZipSlip.cpp
+		unittest/TestPS1Eboot.cpp
 		unittest/TestLzrc.cpp
 		unittest/TestCwCheat.cpp
 		unittest/TestMpegCsc.cpp

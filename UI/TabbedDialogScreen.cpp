@@ -114,11 +114,6 @@ void UITabbedBaseDialogScreen::CreateViews() {
 
 	// Let the subclass create its tabs.
 	CreateTabs();
-	if (currentTabSetting_) {
-		tabHolder_->SetInitialTab(*currentTabSetting_);
-	} else {
-		tabHolder_->EnsureTab(tabHolder_->GetCurrentTab());
-	}
 
 	tabHolder_->OnChangeTab.Add([this](UI::EventParams &e) {
 		if (currentTabSetting_) {
@@ -135,12 +130,12 @@ void UITabbedBaseDialogScreen::CreateViews() {
 			AddTab("GameSettingsSearch", ms->T("Search"), ImageID("I_SEARCH"), [this](UI::LinearLayout *searchSettings) {
 				auto se = GetI18NCategory(I18NCat::SEARCH);
 
-				searchSettings->Add(new ItemHeader(se->T("Find settings")));
-				searchSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &searchFilter_, se->T("Filter"), "", 64, screenManager()))->OnChange.Add([this](UI::EventParams &e) {
+				ChoiceGroup *searchGroup = searchSettings->Add(new ChoiceGroup(se->T("Find settings")));
+				searchGroup->Add(new PopupTextInputChoice(GetRequesterToken(), &searchFilter_, se->T("Filter"), "", 64, screenManager()))->OnChange.Add([this](UI::EventParams &e) {
 					System_PostUIMessage(UIMessage::GAMESETTINGS_SEARCH, StripSpaces(searchFilter_));
 				});
 
-				clearSearchChoice_ = searchSettings->Add(new Choice(se->T("Clear filter")));
+				clearSearchChoice_ = searchGroup->Add(new Choice(se->T("Clear filter")));
 				clearSearchChoice_->OnClick.Add([](UI::EventParams &e) {
 					System_PostUIMessage(UIMessage::GAMESETTINGS_SEARCH, "");
 				});
@@ -149,6 +144,13 @@ void UITabbedBaseDialogScreen::CreateViews() {
 				noSearchResults_ = searchSettings->Add(new TextView("", new LinearLayoutParams(Margins(20, 5))));
 			});
 		}
+	}
+
+	// After the search tab, which the saved tab can be.
+	if (currentTabSetting_) {
+		tabHolder_->SetInitialTab(*currentTabSetting_);
+	} else {
+		tabHolder_->EnsureTab(tabHolder_->GetCurrentTab());
 	}
 
 	// Need to handle recreates, both important and accidental ones.

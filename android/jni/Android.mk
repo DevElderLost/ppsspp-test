@@ -422,6 +422,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/Render/ManagedTexture.cpp \
   $(SRC)/Common/Render/DrawBuffer.cpp \
   $(SRC)/Common/Render/AtlasGen.cpp \
+  $(SRC)/Common/Render/DropShadow.cpp \
   $(SRC)/Common/Render/TextureAtlas.cpp \
   $(SRC)/Common/Render/Text/draw_text.cpp \
   $(SRC)/Common/Render/Text/draw_text_android.cpp \
@@ -594,6 +595,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Common/DepalettizeShaderCommon.cpp \
   $(SRC)/GPU/Common/FragmentShaderGenerator.cpp \
   $(SRC)/GPU/Common/FramebufferManagerCommon.cpp \
+  $(SRC)/GPU/Common/Overlay.cpp \
   $(SRC)/GPU/Common/PresentationCommon.cpp \
   $(SRC)/GPU/Common/GPUDebugInterface.cpp \
   $(SRC)/GPU/Common/IndexGenerator.cpp.arm \
@@ -688,6 +690,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/FileLoaders/DiskCachingFileLoader.cpp \
   $(SRC)/Core/FileLoaders/HTTPFileLoader.cpp \
   $(SRC)/Core/FileLoaders/LocalFileLoader.cpp \
+  $(SRC)/Core/FileLoaders/PS1EbootFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RamCachingFileLoader.cpp \
   $(SRC)/Core/FileLoaders/RetryingFileLoader.cpp \
   $(SRC)/Core/FileLoaders/ZipFileLoader.cpp \
@@ -1129,6 +1132,7 @@ ifeq ($(UNITTEST),1)
     $(SRC)/unittest/TestSplineTessellation.cpp \
     $(SRC)/unittest/TestGEMath.cpp \
     $(SRC)/unittest/TestZipSlip.cpp \
+    $(SRC)/unittest/TestPS1Eboot.cpp \
     $(SRC)/unittest/UnitTest.cpp
 
   include $(BUILD_EXECUTABLE)
