@@ -24,8 +24,11 @@ enum class RenderPassType {
 	// For the backbuffer we can always use CLEAR/DONT_CARE, so bandwidth cost for a depth channel is negligible
 	// so we don't bother with a non-depth version.
 	BACKBUFFER = 8,
+	// The color attachment is R16G16B16A16_SFLOAT instead of R8G8B8A8_UNORM (HDR post-processing). Combines with the
+	// first three flags; not with BACKBUFFER.
+	FLOAT16 = 16,
 
-	TYPE_COUNT = BACKBUFFER + 1,
+	TYPE_COUNT = FLOAT16 + BACKBUFFER,
 };
 ENUM_CLASS_BITOPS(RenderPassType);
 
@@ -52,6 +55,9 @@ struct VKRImage {
 
 	int numLayers;
 
+	// Mip levels of the image. All levels share the layout tracked in `layout` (see GenerateFramebufferMips).
+	int mipLevels = 1;
+
 	// For debugging.
 	std::string tag;
 
@@ -62,7 +68,8 @@ class VKRFramebuffer {
 public:
 	VKRFramebuffer(const VKRFramebuffer &) = delete;
 	VKRFramebuffer &operator=(const VKRFramebuffer &) = delete;
-	VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag);
+	VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag,
+		VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM, int colorMipLevels = 1);
 	~VKRFramebuffer();
 
 	VkFramebuffer Get(VKRRenderPass *compatibleRenderPass, RenderPassType rpType);
@@ -99,13 +106,17 @@ public:
 
 	VulkanContext *Vulkan() const { return vulkan_; }
 private:
-	static void CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag);
+	static void CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag, int mipLevels = 1);
 
 	VkFramebuffer framebuf[(size_t)RenderPassType::TYPE_COUNT]{};
 
 	VulkanContext *vulkan_;
 	std::string tag_;
 };
+
+inline bool RenderPassTypeIsFloat16(RenderPassType type) {
+	return type != RenderPassType::BACKBUFFER && (type & RenderPassType::FLOAT16) != 0;
+}
 
 inline bool RenderPassTypeHasDepth(RenderPassType type) {
 	return (type & RenderPassType::HAS_DEPTH) || type == RenderPassType::BACKBUFFER;

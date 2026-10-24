@@ -803,6 +803,8 @@ static constexpr ConfigSetting graphicsSettings[] = {
 	ConfigSetting("PlanarShadowDirX", SETTING(g_Config, iPlanarShadowDirX), 45, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowDirZ", SETTING(g_Config, iPlanarShadowDirZ), 30, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowHideOriginal", SETTING(g_Config, bPlanarShadowHideOriginal), true, CfgFlag::PER_GAME),
+	ConfigSetting("ReshadeScale", SETTING(g_Config, iReshadeScale), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ReshadeAutoUI", SETTING(g_Config, bReshadeAutoUI), true, CfgFlag::PER_GAME),
 	ConfigSetting("ScreenFxFXAA", SETTING(g_Config, bScreenFxFXAA), false, CfgFlag::PER_GAME),
 	ConfigSetting("ScreenFxHDR", SETTING(g_Config, bScreenFxHDR), false, CfgFlag::PER_GAME),
 	ConfigSetting("ScreenFxCAS", SETTING(g_Config, bScreenFxCAS), false, CfgFlag::PER_GAME),

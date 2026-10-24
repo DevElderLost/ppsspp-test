@@ -58,9 +58,10 @@ class GLRFramebuffer {
 public:
 	GLRFramebuffer(const GLRFramebuffer &) = delete;
 	GLRFramebuffer &operator=(const GLRFramebuffer &) = delete;
-	GLRFramebuffer(const Draw::DeviceCaps &caps, int _width, int _height, bool z_stencil, const char *tag)
+	GLRFramebuffer(const Draw::DeviceCaps &caps, int _width, int _height, bool z_stencil, const char *tag,
+		Draw::DataFormat _colorFormat = Draw::DataFormat::R8G8B8A8_UNORM, int _mipLevels = 1)
 		: color_texture(caps, _width, _height, 1, 1), z_stencil_texture(caps, _width, _height, 1, 1),
-		width(_width), height(_height), z_stencil_(z_stencil) {
+		width(_width), height(_height), z_stencil_(z_stencil), colorFormat(_colorFormat), mipLevels(_mipLevels) {
 	}
 	~GLRFramebuffer();
 
@@ -78,6 +79,9 @@ public:
 	int height;
 	GLuint colorDepth = 0;
 	bool z_stencil_;
+	// Set when the framebuffer is created. colorFormat can end up R8G8B8A8_UNORM if float rendering isn't available.
+	Draw::DataFormat colorFormat = Draw::DataFormat::R8G8B8A8_UNORM;
+	int mipLevels = 1;
 
 private:
 	std::string tag_;
@@ -307,13 +311,13 @@ public:
 		return step.create_shader.shader;
 	}
 
-	GLRFramebuffer *CreateFramebuffer(int width, int height, bool z_stencil, const char *tag) {
+	GLRFramebuffer *CreateFramebuffer(int width, int height, bool z_stencil, const char *tag, Draw::DataFormat colorFormat = Draw::DataFormat::R8G8B8A8_UNORM, int mipLevels = 1) {
 		_dbg_assert_(width > 0 && height > 0 && tag != nullptr);
 
 		std::lock_guard<std::mutex> lock(initStepsMutex_);
 		GLRInitStep &step = initSteps_.push_uninitialized();
 		step.stepType = GLRInitStepType::CREATE_FRAMEBUFFER;
-		step.create_framebuffer.framebuffer = new GLRFramebuffer(caps_, width, height, z_stencil, tag);
+		step.create_framebuffer.framebuffer = new GLRFramebuffer(caps_, width, height, z_stencil, tag, colorFormat, mipLevels);
 		return step.create_framebuffer.framebuffer;
 	}
 

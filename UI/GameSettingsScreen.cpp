@@ -72,6 +72,7 @@
 #include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "Core/ModImport.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Core/ModImport.h"
 #include "Core/Mods/DataBinDump.h"

@@ -91,6 +91,11 @@ private:
 	bool ShadowDecodeWorld(const void *verts, const void *inds, int count, const VertexDecoder *dec, u32 vertTypeID, u32 vertType, u16 &lower, int &decodeCount);
 	void ShadowInject(u32 target);
 
+	// UI protection for ReShade effects: snapshot of the scene taken before the first 2D draw of the frame.
+	void UiCaptureBeforePrim(VirtualFramebuffer *vfb);
+	bool uiCapture_ = false;
+	int uiPresentCount_ = 0;
+
 	PlanarShadows planarShadows_;
 	std::vector<PlanarShadowVertex> shadowVerts_;
 	std::vector<u8> shadowDecoded_;

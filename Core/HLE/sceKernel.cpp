@@ -441,6 +441,7 @@ int sceKernelDcacheInvalidateRange(u32 addr, int size)
 	return hleNoLog(0);
 }
 
+
 int sceKernelIcacheInvalidateRange(MIPSState *mips, u32 addr, int size) {
 	// A code overlay was just copied into place (see Core/Mods).
 	Mods::Manager::Instance().OnCodeLoaded();

@@ -19,6 +19,8 @@
 
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
+#include "Common/System/Request.h"
+#include "Common/System/OSD.h"
 #include "Common/Render/TextureAtlas.h"
 #include "Common/Render/DrawBuffer.h"
 #include "Common/UI/Context.h"
@@ -46,6 +48,7 @@
 #include "Core/System.h"
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
+#include "GPU/Common/PostShader.h"
 #include "GPU/Common/Overlay.h"
 #include "GPU/Common/PresentationCommon.h"
 
@@ -434,6 +437,43 @@ void DisplayLayoutScreen::CreateViews() {
 	};
 
 	leftColumn->Add(new ItemHeader(gr->T("Postprocessing shaders")));
+
+	// ReShade effects: resolution and HUD protection.
+	{
+		static const char *scaleNames[] = { "100%", "75%", "50%", "33%", "25%" };
+		static const int scaleValues[] = { 100, 75, 50, 33, 25 };
+		reshadeScaleIndex_ = 0;
+		for (int i = 0; i < 5; i++)
+			if (g_Config.iReshadeScale == scaleValues[i])
+				reshadeScaleIndex_ = i;
+		auto *scaleChoice = leftColumn->Add(new PopupMultiChoice(&reshadeScaleIndex_, gr->T("ReShade effect resolution"), scaleNames, 0, ARRAY_SIZE(scaleNames), I18NCat::NONE, screenManager()));
+		scaleChoice->OnChoice.Add([this](UI::EventParams &e) {
+			static const int values[] = { 100, 75, 50, 33, 25 };
+			g_Config.iReshadeScale = values[std::clamp(reshadeScaleIndex_, 0, 4)];
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		});
+		auto *autoUI = leftColumn->Add(new CheckBox(&g_Config.bReshadeAutoUI, gr->T("ReShade: keep the HUD sharp (auto-detect)")));
+		autoUI->OnClick.Add([](UI::EventParams &e) {
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+		});
+	}
+
+	// ReShade FX shaders (.fx, or a zip with a shader pack) are listed with the other post-processing shaders once imported.
+	leftColumn->Add(new Choice(gr->T("Import ReShade shaders...")))->OnClick.Add([this](UI::EventParams &e) {
+		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+		System_BrowseForFile(GetRequesterToken(), gr->T("Import ReShade shaders..."), BrowseFileType::ANY, [this](std::string_view value, int) {
+			if (value.empty())
+				return;
+			std::string message;
+			if (ImportReshadeFiles(Path(value), &message)) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, message);
+				ReloadAllPostShaderInfo(screenManager()->getDrawContext());
+				RecreateViews();
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, message);
+			}
+		});
+	});
 
 	std::set<std::string> alreadyAddedShader;
 	// If there's a single post shader and we're just entering the dialog,

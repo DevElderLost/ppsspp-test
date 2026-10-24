@@ -389,6 +389,7 @@ public:
 	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspect channelBit, int layer) override;
 
 	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
+	bool FramebufferHasDepth(Framebuffer *fbo) override;
 
 	void BindSamplerStates(int start, int count, SamplerState **states) override {
 		_assert_(start + count <= MAX_TEXTURE_SLOTS);
@@ -1335,10 +1336,12 @@ bool OpenGLPipeline::LinkShaders(const PipelineDesc &desc) {
 		}
 		samplersToCheck = size;
 	} else {
-		queries.push_back({ &locs_->samplerLocs_[0], "sampler0" });
-		queries.push_back({ &locs_->samplerLocs_[1], "sampler1" });
-		queries.push_back({ &locs_->samplerLocs_[2], "sampler2" });
-		samplersToCheck = 3;
+		static const char *const defaultSamplerNames[] = { "sampler0", "sampler1", "sampler2", "sampler3", "sampler4", "sampler5", "sampler6", "sampler7" };
+		static_assert(ARRAY_SIZE(defaultSamplerNames) >= MAX_TEXTURE_SLOTS, "add sampler names");
+		for (int i = 0; i < (int)MAX_TEXTURE_SLOTS; i++) {
+			queries.push_back({ &locs_->samplerLocs_[i], defaultSamplerNames[i], false });
+		}
+		samplersToCheck = MAX_TEXTURE_SLOTS;
 	}
 
 	_assert_(queries.size() <= MAX_TEXTURE_SLOTS);
@@ -1580,7 +1583,7 @@ Framebuffer *OpenGLContext::CreateFramebuffer(const FramebufferDesc &desc) {
 	// TODO: Support multiview later. (It's our only use case for multi layers).
 	_dbg_assert_(desc.numLayers == 1);
 
-	GLRFramebuffer *framebuffer = renderManager_.CreateFramebuffer(desc.width, desc.height, desc.z_stencil, desc.tag);
+	GLRFramebuffer *framebuffer = renderManager_.CreateFramebuffer(desc.width, desc.height, desc.z_stencil, desc.tag, desc.colorFormat, desc.mipLevels);
 	OpenGLFramebuffer *fbo = new OpenGLFramebuffer(&renderManager_, framebuffer);
 	return fbo;
 }
@@ -1663,6 +1666,11 @@ void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspe
 		boundTextures_[binding] = &fb->framebuffer_->z_stencil_texture;
 	}
 	renderManager_.BindFramebufferAsTexture(fb->framebuffer_, binding, glAspect);
+}
+
+bool OpenGLContext::FramebufferHasDepth(Framebuffer *fbo) {
+	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
+	return fb && fb->framebuffer_ && fb->framebuffer_->z_stencil_;
 }
 
 void OpenGLContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) {

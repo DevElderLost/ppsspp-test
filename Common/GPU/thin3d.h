@@ -296,7 +296,7 @@ enum class ReadbackMode {
 	OLD_DATA_OK,  // Lets the backend return old results that won't need any waiting to get.
 };
 
-constexpr uint32_t MAX_TEXTURE_SLOTS = 3;
+constexpr uint32_t MAX_TEXTURE_SLOTS = 8;
 
 struct FramebufferDesc {
 	int width;
@@ -306,6 +306,12 @@ struct FramebufferDesc {
 	int multiSampleLevel;  // 0 = 1xaa, 1 = 2xaa, and so on.
 	bool z_stencil;
 	const char *tag;  // For graphics debuggers
+	// Color format: R8G8B8A8_UNORM (default) or R16G16B16A16_FLOAT (HDR post-processing). Backends that can't render to
+	// float fall back to R8G8B8A8_UNORM (check GetFramebufferColorFormat if it matters).
+	DataFormat colorFormat = DataFormat::R8G8B8A8_UNORM;
+	// More than one mip level makes the color texture mipmapped; the levels are regenerated after every render pass
+	// into the framebuffer. Only the OpenGL and Vulkan backends do this.
+	int mipLevels = 1;
 };
 
 // Binary compatible with D3D11 viewport.
@@ -871,7 +877,7 @@ public:
 	// If an fbo has two layers, we bind for stereo rendering ALWAYS. There's no rendering to one layer anymore.
 	virtual void BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPassInfo &rp, const char *tag) = 0;
 
-	// binding must be < MAX_TEXTURE_SLOTS (0, 1 are okay if it's 2).
+	// binding must be < MAX_TEXTURE_SLOTS.
 	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspect aspect, int layer) = 0;
 	// Binds a multisampled framebuffer's color samples, for texelFetch from a sampler with SamplerFlags::MULTISAMPLE.
 	// Check framebufferSampleReadSupported.
@@ -881,6 +887,8 @@ public:
 	virtual void BindCurrentFramebufferForColorInput() {}
 
 	virtual void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) = 0;
+	// False if the framebuffer has no depth buffer to texture from (BindFramebufferAsTexture with Aspect::DEPTH_BIT).
+	virtual bool FramebufferHasDepth(Framebuffer *fbo) { return true; }
 
 	// Could be useful in OpenGL ES to give hints about framebuffers on tiler GPUs
 	// using glInvalidateFramebuffer, although drivers are known to botch that so we currently don't use it.

@@ -53,6 +53,7 @@ protected:
 private:
 	UI::ChoiceStrip *mode_ = nullptr;
 	UI::Choice *postProcChoice_ = nullptr;
+	int reshadeScaleIndex_ = 0;
 	std::string shaderNames_[256];
 	std::deque<bool> settingsVisible_;  // vector<bool> is an insane bitpacked specialization! Not to be used with checkboxes!
 };
