@@ -38,6 +38,7 @@
 #include "Core/Util/RecentFiles.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/ELF/PBPReader.h"
+#include "Core/FileLoaders/PS1EbootFileLoader.h"
 #include "Core/MemMap.h"
 #include "Core/Util/VideoPlayer.h"
 
@@ -77,7 +78,8 @@ static float ListTextRightMargin(GameBrowserViewMode viewMode) {
 	return 0.0f;
 }
 
-static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style) {
+// In the list views, rightText (like a game ID) goes at the right edge, as for a game with a picture.
+static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style, std::string_view rightText = {}) {
 	const bool gridStyle = viewMode == GameBrowserViewMode::GRID;
 	float tw, th;
 	dc.MeasureText(dc.GetFontStyle(), gridStyle ? g_Config.fGameGridScale : 1.0, gridStyle ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
@@ -121,6 +123,14 @@ static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text
 
 		float tx = textX;
 		int availableWidth = bounds.w - textX - ListTextRightMargin(viewMode);
+		if (!rightText.empty()) {
+			float vw, vh;
+			dc.MeasureText(dc.GetFontStyle(), 0.7f, 0.7f, rightText, &vw, &vh, 0);
+			availableWidth -= vw + 20;
+			dc.SetFontScale(0.7f, 0.7f);
+			dc.DrawText(rightText, bounds.x + availableWidth + textX + 10, bounds.centerY(), style.fgColor, ALIGN_VCENTER);
+			dc.SetFontScale(1.0f, 1.0f);
+		}
 		float sineWidth = std::max(0.0f, (tw - availableWidth)) / 2.0f;
 		if (availableWidth < tw) {
 			tx -= (1.0f + sin(time_now_d() * 1.5f)) * sineWidth;
@@ -417,10 +427,14 @@ void GameButton::Draw(UIContext &dc) {
 	if (ginfo->Ready(GameInfoFlags::ICON)) {
 		if (ginfo->icon.texture && drawBackground) {
 			texture = ginfo->icon.texture;
+			// The type icon is only for when there's no picture, and would be drawn on top of it.
+			imageIcon = ImageID::invalid();
 		} else if (drawBackground) {
 			// No icon, but drawBackground is set. Let's show a plain icon depending on type.
 			if (ginfo->fileType == IdentifiedFileType::PSP_ISO || ginfo->fileType == IdentifiedFileType::PSP_ISO_NP) {
 				imageIcon = ImageID("I_UMD");
+			} else if (ginfo->fileType == IdentifiedFileType::PSX_ISO || ginfo->fileType == IdentifiedFileType::PSP_PS1_PBP) {
+				imageIcon = ImageID("I_PSX_ISO");
 			} else if (gamePath_.Type() == PathType::HTTP) {
 				imageIcon = ginfo->fileType == IdentifiedFileType::UNKNOWN ? ImageID("I_LINK_OUT_QUESTION") : ImageID("I_LINK_OUT");
 			} else {
@@ -547,7 +561,7 @@ void GameButton::Draw(UIContext &dc) {
 		if (down_) style = dc.GetTheme().itemDownStyle;
 		if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
-		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style);
+		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style, g_Config.bShowIDOnGameIcon ? std::string_view(ginfo->id_version) : std::string_view());
 
 		if (overlayColor) {
 			dc.FillRect(Drawable(overlayColor), overlayBounds);
@@ -731,7 +745,9 @@ void DirButton::Draw(UIContext &dc) {
 
 	std::string_view text(GetText());
 	ImageID image = ImageID(pinned_ ? "I_FOLDER_PINNED" : "I_FOLDER");
-	if (text == "..") {
+	if (path_.IsNetworkRoot()) {
+		image = ImageID("I_NETWORK");
+	} else if (text == "..") {
 		image = ImageID("I_UP_DIRECTORY");
 		text = "";
 	}
@@ -1017,7 +1033,7 @@ void GameBrowser::Refresh() {
 	// Recent isn't a real folder, so it gets no path or refresh.
 	const bool isRecent = path_.GetPath().ToString() == "!RECENT";
 
-	std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
+	std::string pathStr = path_.GetPath().IsNetworkRoot() ? std::string(mm->T("Network")) : GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
 
 	if (pathOnSeparateLine && !isRecent) {
 		Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
@@ -1114,12 +1130,18 @@ void GameBrowser::Refresh() {
 		}
 	} else if (!listingPending_) {
 		std::vector<File::FileInfo> fileInfo;
-		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
+		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:cue:ccd:mds:bin:img:");
+		// PS1 discs: a .bin or .img shows up as its cue sheet or .ccd, when it has one.
+		RemoveDescribedDiscImages(&fileInfo);
+		// Drives and servers aren't games, and probing a server that's gone away can take seconds.
+		const bool probeDirs = !path_.GetPath().IsRoot() && !path_.GetPath().IsNetworkRoot();
 		for (size_t i = 0; i < fileInfo.size(); i++) {
 			bool isGame = !fileInfo[i].isDirectory;
 			bool isSaveData = false;
 			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
-			if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
+			if (!probeDirs) {
+				// Just a directory.
+			} else if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
 				isGame = true;
 			else if (!isGame && File::Exists(path_.GetPath() / fileInfo[i].name / "PSP_GAME/SYSDIR"))
 				isGame = true;
@@ -1128,7 +1150,8 @@ void GameBrowser::Refresh() {
 
 			if (!isGame && !isSaveData) {
 				if (browseFlags_ & BrowseFlags::NAVIGATE) {
-					dirButtons.push_back(new DirButton(fileInfo[i].fullName, fileInfo[i].name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+					const std::string name = fileInfo[i].fullName.IsNetworkRoot() ? std::string(mm->T("Network")) : fileInfo[i].name;
+					dirButtons.push_back(new DirButton(fileInfo[i].fullName, name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 				}
 			} else {
 				gameButtons.push_back(new GameButton(fileInfo[i].fullName, lastViewMode_, new UI::LinearLayoutParams(gridStyle ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));

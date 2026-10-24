@@ -511,6 +511,7 @@ SOURCES_CXX += \
 	$(COMMONDIR)/Net/WebsocketServer.cpp \
 	$(COMMONDIR)/Render/ManagedTexture.cpp \
 	$(COMMONDIR)/Render/DrawBuffer.cpp \
+	$(COMMONDIR)/Render/DropShadow.cpp \
 	$(COMMONDIR)/Render/TextureAtlas.cpp \
 	$(COMMONDIR)/Serialize/Serializer.cpp \
 	$(COMMONDIR)/Thread/ThreadUtil.cpp \
@@ -559,6 +560,7 @@ SOURCES_CXX += \
 	$(GPUCOMMONDIR)/FillScreen.cpp \
 	$(GPUCOMMONDIR)/SplineCommon.cpp \
 	$(GPUCOMMONDIR)/FramebufferManagerCommon.cpp \
+	$(GPUCOMMONDIR)/Overlay.cpp \
 	$(GPUCOMMONDIR)/PresentationCommon.cpp \
 	$(GPUCOMMONDIR)/ReinterpretFramebuffer.cpp \
 	$(GPUCOMMONDIR)/ShaderId.cpp \
@@ -731,6 +733,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/FileLoaders/RetryingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/RamCachingFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/LocalFileLoader.cpp \
+	       $(COREDIR)/FileLoaders/PS1EbootFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/ZipFileLoader.cpp \
 	       $(COREDIR)/CoreTiming.cpp \
 	       $(COREDIR)/CwCheat.cpp \

@@ -48,12 +48,32 @@ Two separate things:
   6.61, to its title menu). In the app, the pause screen offers "Insert UMD" and "Eject UMD" while
   the XMB is running.
 
+  A disc game, or an EBOOT on the memory stick, that the XMB starts doesn't run inside the XMB's
+  session: `sceKernelLoadExec` asks the frontend to boot it (`PSP_RequestBoot`) and stops, and it
+  boots like a game picked from the game list, with its `PARAM.SFO`, compat flags, game config and
+  window title. Its `CoreParameter::launchedFromVSH` keeps the XMB's launch args, so exiting boots
+  the XMB again with whatever disc is in the drive, and the XMB comes back where it was without
+  auto-starting the disc. A disc whose executables are all zeroes (the EUR Video Demo Disc's
+  "game") still loads in place and fails back to the XMB. Under the debugger, the new boot starts
+  stopped, like the first one.
+
   UMD Video discs work too: the disc type comes from what's on the disc (`PSP_GAME`, `UMD_VIDEO`,
   `UMD_AUDIO`), the shell lists a video disc in the Video column, and selecting it hands it to the
   firmware's own player (`video_plugin`, `video_main_plugin`, with `mpeg_vsh.prx`). Bourne Supremacy
   and the Spider-Man 2 trailer on the EUR Video Demo Disc play with sound. What that player needed
   from our Media Engine HLE (per-picture SEI records, keyframe flags, field conversion in
   `sceMpegBaseCscAvc`) is in pspautotests `video/mpeg/avcdetail` and `video/mpeg/cscavc`.
+
+  Booting a UMD Video disc (from the game list, the command line or anywhere else) boots the XMB
+  with the disc in the drive and UMD auto-start forced on (`CoreParameter::umdAutoboot`), so it
+  goes straight to the disc's menu. The swap happens in `PSP_InitStart`'s loader thread. That
+  needs firmware 2.71 or later: 1.50, 2.00 and 2.60 crash in `video_plugin`/paf as soon as the disc
+  is in, and 2.50 refuses it, claiming the system software is version "." (all measured with
+  Bourne Supremacy). A disc with both a game and video asks which one; for video the XMB comes up
+  without auto-start, since auto-start runs the game. The disc type comes from the fourth field of
+  `UMD_DATA.BIN` (`G`, `V`, `A`), and `PSP_GAME` without `SYSDIR/EBOOT.BIN` doesn't count: some video
+  discs (Spider-Man) carry a `PSP_GAME` holding only a firmware update, and reporting those as game
+  discs made the XMB say "The disc could not be read."
 - **It then asked whether the region matched and we didn't answer.** `sceIoDevctl` `0x01E18030` is
   the region check, and unusually it answers through the *return value* (1 matches, 0 doesn't)
   rather than an output buffer. It was unimplemented, so the VSH read the failure as a mismatch and
@@ -379,11 +399,13 @@ boot *worse*, because a correct implementation lets a real flash0 driver finish 
 on into hardware PPSSPP does not emulate. Leaving the import unresolved makes the driver fail early
 and the boot continues. All three are commented in the source at the point where they'd be added:
 
-- **`ThreadManForKernel` mutex/fpl NIDs** (`0xB7D098C6` `sceKernelCreateMutex`, `0xB011B11F`
-  `sceKernelLockMutex`, `0x6B30100F` `sceKernelUnlockMutex`, `0xD979E9BF` `sceKernelAllocateFpl`) -
-  we implement all four for user mode already. Resolve them and the NAND and ID storage drivers
-  init successfully, then `sceIdStorage_Service` polls the NAND controller at `0xbd101300` forever.
-  No module starts.
+- **`ThreadManForKernel` mutex NIDs** (`0xB7D098C6` `sceKernelCreateMutex`, `0xB011B11F`
+  `sceKernelLockMutex`, `0x6B30100F` `sceKernelUnlockMutex`) - we implement all three for user
+  mode already. Resolve them and the NAND and ID storage drivers init successfully, then
+  `sceIdStorage_Service` polls the NAND controller at `0xbd101300` forever (470k reads in 25
+  emulated seconds), and only 4 modules start. `sceKernelAllocateFpl` (`0xD979E9BF`) used to be on
+  this list, but it's the mutexes that do it: with only the FPL resolved, `sceIdStorage_Service`
+  allocates from its pool and the boot still reaches the XMB.
 - **`InterruptManagerForKernel` interrupt registration** (`0x58DD8978`, `0xF987B1F0`, `0x4D6E7305`,
   `0xD774BA45`) - JPCSP can honour these because it emulates the interrupt controller as MMIO. We
   dispatch the few interrupts we emulate ourselves (`__RegisterIntrHandler`), so success is a lie
