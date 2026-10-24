@@ -331,6 +331,11 @@ static constexpr ConfigSetting generalSettings[] = {
 	ConfigSetting("RightAnalogRight", SETTING(g_Config, iRightAnalogRight), 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogPress", SETTING(g_Config, iRightAnalogPress), 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogCustom", SETTING(g_Config, bRightAnalogCustom), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraDrag", SETTING(g_Config, bTouchCameraDrag), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraZone", SETTING(g_Config, iTouchCameraZone), 0, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraSensitivity", SETTING(g_Config, fTouchCameraSensitivity), 1.0f, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraInvertX", SETTING(g_Config, bTouchCameraInvertX), false, CfgFlag::PER_GAME),
+	ConfigSetting("TouchCameraInvertY", SETTING(g_Config, bTouchCameraInvertY), false, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogDisableDiagonal", SETTING(g_Config, bRightAnalogDisableDiagonal), false, CfgFlag::PER_GAME),
 
 	ConfigSetting("TouchGliding", SETTING(g_Config, bTouchGliding), false, CfgFlag::PER_GAME),
@@ -790,6 +795,25 @@ static constexpr ConfigSetting graphicsSettings[] = {
 	// Most low-performance (and many high performance) mobile GPUs do not support aniso anyway so defaulting to 4 is fine.
 	ConfigSetting("AnisotropyLevel", SETTING(g_Config, iAnisotropyLevel), 4, CfgFlag::PER_GAME),
 	ConfigSetting("MultiSampleLevel", SETTING(g_Config, iMultiSampleLevel), 0, CfgFlag::PER_GAME),  // Number of samples is 1 << iMultiSampleLevel
+
+	ConfigSetting("PlanarShadows", SETTING(g_Config, bPlanarShadows), false, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowQuality", SETTING(g_Config, iPlanarShadowQuality), 1, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDistance", SETTING(g_Config, iPlanarShadowDistance), 2, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowOpacity", SETTING(g_Config, iPlanarShadowOpacity), 25, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDirX", SETTING(g_Config, iPlanarShadowDirX), 45, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowDirZ", SETTING(g_Config, iPlanarShadowDirZ), 30, CfgFlag::PER_GAME),
+	ConfigSetting("PlanarShadowHideOriginal", SETTING(g_Config, bPlanarShadowHideOriginal), true, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxFXAA", SETTING(g_Config, bScreenFxFXAA), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxHDR", SETTING(g_Config, bScreenFxHDR), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxCAS", SETTING(g_Config, bScreenFxCAS), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxCASLevel", SETTING(g_Config, iScreenFxCASLevel), 50, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxDeband", SETTING(g_Config, bScreenFxDeband), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxDebandLevel", SETTING(g_Config, iScreenFxDebandLevel), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxBrightness", SETTING(g_Config, iScreenFxBrightness), 0, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxContrast", SETTING(g_Config, iScreenFxContrast), 0, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxGamma", SETTING(g_Config, iScreenFxGamma), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxSaturation", SETTING(g_Config, iScreenFxSaturation), 100, CfgFlag::PER_GAME),
+	ConfigSetting("FillScreen", SETTING(g_Config, bFillScreen), false, CfgFlag::PER_GAME),
 
 	ConfigSetting("VertexDecJit", SETTING(g_Config, bVertexDecoderJit), &DefaultCodeGen, CfgFlag::DONT_SAVE | CfgFlag::REPORT),
 
@@ -1676,6 +1700,15 @@ void Config::PostLoadCleanup() {
 
 	// This caps the aniso level exponent to 4 (so 16x.). No hardware supports more anyway.
 	iAnisotropyLevel = std::clamp(iAnisotropyLevel, 0, 4);
+
+	iTouchCameraZone = std::clamp(iTouchCameraZone, 0, 2);
+	fTouchCameraSensitivity = std::clamp(fTouchCameraSensitivity, 0.1f, 5.0f);
+
+	iPlanarShadowQuality = std::clamp(iPlanarShadowQuality, 0, 2);
+	iPlanarShadowDistance = std::clamp(iPlanarShadowDistance, 0, 3);
+	iPlanarShadowOpacity = std::clamp(iPlanarShadowOpacity, 0, 60);
+	iPlanarShadowDirX = std::clamp(iPlanarShadowDirX, -200, 200);
+	iPlanarShadowDirZ = std::clamp(iPlanarShadowDirZ, -200, 200);
 
 	if (iGPUBackend == 1) {  // d3d9, no longer supported. Fall back to D3D11.
 		iGPUBackend = (int)GPUBackend::DIRECT3D11;

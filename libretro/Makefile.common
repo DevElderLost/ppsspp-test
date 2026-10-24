@@ -556,6 +556,8 @@ SOURCES_CXX += \
 	$(GPUCOMMONDIR)/VertexDecoderHandwritten.cpp \
 	$(GPUCOMMONDIR)/GPUStateUtils.cpp \
 	$(GPUCOMMONDIR)/DrawEngineCommon.cpp \
+	$(GPUCOMMONDIR)/PlanarShadows.cpp \
+	$(GPUCOMMONDIR)/FillScreen.cpp \
 	$(GPUCOMMONDIR)/SplineCommon.cpp \
 	$(GPUCOMMONDIR)/FramebufferManagerCommon.cpp \
 	$(GPUCOMMONDIR)/Overlay.cpp \
@@ -711,6 +713,13 @@ SOURCES_CXX += \
 	       $(EXTDIR)/jpge/jpge.cpp \
 	       $(COREDIR)/AVIDump.cpp \
 	       $(COREDIR)/Config.cpp \
+	       $(COREDIR)/ModImport.cpp \
+	       $(COREDIR)/Mods/DataBin.cpp \
+	       $(COREDIR)/Mods/DataBinDump.cpp \
+	       $(COREDIR)/Mods/DataBinDumpDisc.cpp \
+	       $(COREDIR)/Mods/ModEngine.cpp \
+	       $(COREDIR)/Mods/ModGuest.cpp \
+	       $(COREDIR)/Mods/ModLibrary.cpp \
 	       $(COREDIR)/ConfigSettings.cpp \
 	       $(COREDIR)/ControlMapper.cpp \
 	       $(COREDIR)/Core.cpp \

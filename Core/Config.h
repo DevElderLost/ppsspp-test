@@ -358,6 +358,29 @@ public:
 	bool bAllowFullScreenExclusive;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
+
+	// Planar silhouette shadows (see GPU/Common/PlanarShadows.h).
+	bool bPlanarShadows;
+	int iPlanarShadowQuality;   // 0 = Low (64), 1 = Medium (96), 2 = High (192)
+	int iPlanarShadowDistance;  // 0 = No limit, 1 = Short, 2 = Medium, 3 = Long
+	int iPlanarShadowOpacity;   // Percent, 0 - 60
+	int iPlanarShadowDirX;      // Hundredths of a world unit per unit of height, -200 - 200
+	int iPlanarShadowDirZ;      // Same, for the Z axis.
+	bool bPlanarShadowHideOriginal;  // Skip the game's own round blob shadows (Monster Hunter Portable 3rd signature).
+	// Screen effects (Graphics > Screen effects), ported from the tiny_computer compositor. They run as built-in
+	// post-processing passes after the selected post-processing shaders (see ScreenFx* in GPU/Common/PostShader.h).
+	bool bScreenFxFXAA;
+	bool bScreenFxHDR;           // HDR bloom / tone effect
+	bool bScreenFxCAS;           // Contrast adaptive sharpening
+	int iScreenFxCASLevel;       // 0 - 100
+	bool bScreenFxDeband;        // Dither against colour banding
+	int iScreenFxDebandLevel;    // 0 - 200 (percent of one 8-bit step)
+	int iScreenFxBrightness;     // -100 - 100, 0 = neutral
+	int iScreenFxContrast;       // 0 - 100, 0 = neutral
+	int iScreenFxGamma;          // 50 - 300 (hundredths), 100 = neutral
+	int iScreenFxSaturation;     // 0 - 200 (percent), 100 = neutral
+	// Fill screen (see GPU/Common/FillScreen.h): the picture covers the whole display without being stretched.
+	bool bFillScreen;
 	int iMultiSampleLevel;
 	int bHighQualityDepth;
 	bool bReplaceTextures;
@@ -503,6 +526,14 @@ public:
 	int iRightAnalogRight;
 	int iRightAnalogPress;
 	bool bRightAnalogCustom;
+
+	// Free screen camera drag: a finger on a part of the screen that has no touch control moves the
+	// right analog stick, by how fast it drags (see CameraDragGamepad).
+	bool bTouchCameraDrag;
+	int iTouchCameraZone;  // 0 = whole free screen, 1 = right half, 2 = left half
+	float fTouchCameraSensitivity;
+	bool bTouchCameraInvertX;
+	bool bTouchCameraInvertY;
 	bool bRightAnalogDisableDiagonal;
 
 	// 0 for left, 1 for right

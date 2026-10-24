@@ -1,5 +1,15 @@
-name: Manual Generate Android APK
+name: Generate Android APK
 on:
+  push:
+    branches:
+    - '**'
+    tags:
+      - "v*.*"
+    paths-ignore:
+    - '*.{txt,md}'
+    - 'Tools/**'
+    - '.{editorconfig,gitattributes,gitignore}'
+    - 'appveyor.yml'
   workflow_dispatch:
     inputs:
 
@@ -18,7 +28,7 @@ on:
 jobs:
 
   apk:
-    name: Generate ${{ github.event.inputs.buildVariant }} APK
+    name: Generate ${{ github.event.inputs.buildVariant || 'NormalOptimized' }} APK
     runs-on: ubuntu-latest
 
     steps:
@@ -55,16 +65,16 @@ jobs:
       #  with:
       #    ndk-version: r21e
 
-      - name: Test androidGitVersion
+      - name: Show git version
         run: |
           echo "count=${{steps.valid-tags.outputs.count}}"
-          gradle --quiet androidGitVersion
+          git describe --tags --always
       
       - name: Assemble APK
-        run: ./gradlew assemble${{ github.event.inputs.buildVariant }} --stacktrace
+        run: ./gradlew assemble${{ github.event.inputs.buildVariant || 'NormalOptimized' }} --stacktrace
       
       #- name: Gradle Test
-      #  run: bash ./gradlew test${{ github.event.inputs.buildVariant }}UnitTest --stacktrace
+      #  run: bash ./gradlew test${{ github.event.inputs.buildVariant || 'NormalOptimized' }}UnitTest --stacktrace
       
       - name: Package build
         run: |
@@ -77,5 +87,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: android-${{ github.event.inputs.buildVariant }} build
+          name: android-${{ github.event.inputs.buildVariant || 'NormalOptimized' }} build
           path: ppsspp/

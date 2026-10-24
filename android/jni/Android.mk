@@ -613,6 +613,8 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/GPU/Common/StencilCommon.cpp \
   $(SRC)/GPU/Common/SplineCommon.cpp.arm \
   $(SRC)/GPU/Common/DrawEngineCommon.cpp.arm \
+  $(SRC)/GPU/Common/PlanarShadows.cpp.arm \
+  $(SRC)/GPU/Common/FillScreen.cpp \
   $(SRC)/GPU/Common/TransformCommon.cpp.arm \
   $(SRC)/GPU/Common/TextureDecoder.cpp \
   $(SRC)/GPU/Common/PostShader.cpp \
@@ -674,6 +676,13 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Compatibility.cpp \
   $(SRC)/Core/CmdLine.cpp \
   $(SRC)/Core/Config.cpp \
+  $(SRC)/Core/ModImport.cpp \
+  $(SRC)/Core/Mods/DataBin.cpp \
+  $(SRC)/Core/Mods/DataBinDump.cpp \
+  $(SRC)/Core/Mods/DataBinDumpDisc.cpp \
+  $(SRC)/Core/Mods/ModEngine.cpp \
+  $(SRC)/Core/Mods/ModGuest.cpp \
+  $(SRC)/Core/Mods/ModLibrary.cpp \
   $(SRC)/Core/ConfigSettings.cpp \
   $(SRC)/Core/CoreTiming.cpp \
   $(SRC)/Core/CwCheat.cpp \
@@ -1056,6 +1065,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/CwCheatScreen.cpp \
   $(SRC)/UI/InstallPkgScreen.cpp \
   $(SRC)/UI/FirmwareScreen.cpp \
+  $(SRC)/UI/ModsScreen.cpp \
   $(SRC)/UI/InstallUpdateScreen.cpp \
   $(SRC)/UI/InstallZipScreen.cpp \
   $(SRC)/UI/JitCompareScreen.cpp \

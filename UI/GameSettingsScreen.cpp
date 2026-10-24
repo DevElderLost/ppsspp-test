@@ -16,6 +16,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <atomic>
 #include "ppsspp_config.h"
 
 #include <algorithm>
@@ -51,6 +52,7 @@
 #include "UI/DeveloperToolsScreen.h"
 #include "UI/DisplayLayoutScreen.h"
 #include "UI/FirmwareScreen.h"
+#include "UI/ModsScreen.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/SavedataScreen.h"
 #include "UI/SystemInfoScreen.h"
@@ -70,6 +72,9 @@
 #include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "Common/Thread/ThreadManager.h"
+#include "Core/ModImport.h"
+#include "Core/Mods/DataBinDump.h"
 #include "Core/ConfigValues.h"
 #include "Core/KeyMap.h"
 #include "Core/TiltEventProcessor.h"
@@ -615,6 +620,52 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *smartFiltering = filteringSettings->Add(new CheckBox(&g_Config.bSmart2DTexFiltering, gr->T("Smart 2D texture filtering")));
 	smartFiltering->SetDisabledPtr(&g_Config.bSoftwareRendering);
 
+	graphicsSettings->Add(new ItemHeader(gr->T("Shadows")));
+	CheckBox *planarShadows = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadows, gr->T("Planar shadows")));
+	planarShadows->SetDisabledPtr(&g_Config.bSoftwareRendering);
+	graphicsSettings->Add(new SettingHint(gr->T("Planar shadows Tip", "Experimental: adds animated silhouette shadows under skinned characters and monsters, drawn on the GPU"), planarShadows));
+	static const char *shadowQualityLevels[] = { "Low (64)", "Medium (96)", "High (192)" };
+	PopupMultiChoice *shadowQuality = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowQuality, gr->T("Shadow quality"), shadowQualityLevels, 0, ARRAY_SIZE(shadowQualityLevels), I18NCat::GRAPHICS, screenManager()));
+	shadowQuality->SetEnabledPtr(&g_Config.bPlanarShadows);
+	static const char *shadowDistances[] = { "No limit", "Short", "Medium", "Long" };
+	PopupMultiChoice *shadowDistance = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iPlanarShadowDistance, gr->T("Shadow distance"), shadowDistances, 0, ARRAY_SIZE(shadowDistances), I18NCat::GRAPHICS, screenManager()));
+	shadowDistance->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowOpacity = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowOpacity, 0, 60, 25, gr->T("Shadow opacity"), 5, screenManager(), "%"));
+	shadowOpacity->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirX = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirX, -200, 200, 45, gr->T("Shadow direction X"), 5, screenManager()));
+	shadowDirX->SetEnabledPtr(&g_Config.bPlanarShadows);
+	PopupSliderChoice *shadowDirZ = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iPlanarShadowDirZ, -200, 200, 30, gr->T("Shadow direction Z"), 5, screenManager()));
+	shadowDirZ->SetEnabledPtr(&g_Config.bPlanarShadows);
+	CheckBox *shadowHide = graphicsSettings->Add(new CheckBox(&g_Config.bPlanarShadowHideOriginal, gr->T("Hide original blob shadows")));
+	shadowHide->SetEnabledPtr(&g_Config.bPlanarShadows);
+
+	CheckBox *fillScreen = graphicsSettings->Add(new CheckBox(&g_Config.bFillScreen, gr->T("Fill screen without stretching")));
+	fillScreen->SetEnabledFunc([] {
+		return !g_Config.bSoftwareRendering;
+	});
+	graphicsSettings->Add(new SettingHint(gr->T("Fill screen Tip", "Monster Hunter Portable 3rd HD only: the game's view is widened to the shape of your display (21:9, say) instead of being stretched, and the HUD keeps its proportions. Movies keep their own shape."), fillScreen));
+
+	graphicsSettings->Add(new ItemHeader(gr->T("Screen effects")));
+	// Ported from the tiny_computer compositor. They run after the post-processing shaders, at the display resolution.
+	graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxFXAA, gr->T("FXAA anti-aliasing")));
+	CheckBox *screenFxHDR = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxHDR, gr->T("HDR effect")));
+	graphicsSettings->Add(new SettingHint(gr->T("HDR effect Tip", "Bloom and tone boost that gives the image an HDR look (not real HDR output)"), screenFxHDR));
+	CheckBox *screenFxCAS = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxCAS, gr->T("CAS sharpening")));
+	PopupSliderChoice *screenFxCASLevel = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxCASLevel, 0, 100, 50, gr->T("CAS sharpness"), 5, screenManager(), "%"));
+	screenFxCASLevel->SetEnabledPtr(&g_Config.bScreenFxCAS);
+	CheckBox *screenFxDeband = graphicsSettings->Add(new CheckBox(&g_Config.bScreenFxDeband, gr->T("Deband (dither)")));
+	graphicsSettings->Add(new SettingHint(gr->T("Deband Tip", "Adds a little noise to hide colour banding in gradients"), screenFxDeband));
+	PopupSliderChoice *screenFxDebandLevel = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxDebandLevel, 0, 200, 100, gr->T("Deband strength"), 10, screenManager(), "%"));
+	screenFxDebandLevel->SetEnabledPtr(&g_Config.bScreenFxDeband);
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxBrightness, -100, 100, 0, gr->T("Brightness"), 5, screenManager()));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxContrast, 0, 100, 0, gr->T("Contrast"), 5, screenManager()));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxGamma, 50, 300, 100, gr->T("Gamma"), 5, screenManager(), "%"));
+	graphicsSettings->Add(new PopupSliderChoice(&g_Config.iScreenFxSaturation, 0, 200, 100, gr->T("Saturation"), 5, screenManager(), "%"));
+	graphicsSettings->Add(new Choice(gr->T("Reset screen effects")))->OnClick.Add([this](UI::EventParams &e) {
+		ResetScreenFxSettings();
+		RecreateViews();
+	});
+
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else
@@ -872,6 +923,19 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 			screenManager()->push(new GestureMappingScreen(gamePath_));
 		});
 		gesture->SetEnabledPtr(&g_Config.bShowTouchControls);
+
+		CheckBox *cameraDrag = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraDrag, co->T("Free screen camera drag")));
+		cameraDrag->SetEnabledPtr(&g_Config.bShowTouchControls);
+		controlsSettings->Add(new SettingHint(co->T("Free screen camera drag Tip", "Drag a finger over a free part of the screen to move the right analog stick. Turn on \"Right analog stick custom\" to map it to buttons or the left stick"), cameraDrag));
+		static const char *cameraZones[] = { "Whole screen", "Right half", "Left half" };
+		PopupMultiChoice *cameraZone = controlsSettings->Add(new PopupMultiChoice(&g_Config.iTouchCameraZone, co->T("Camera drag area"), cameraZones, 0, ARRAY_SIZE(cameraZones), I18NCat::CONTROLS, screenManager()));
+		cameraZone->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		PopupSliderChoiceFloat *cameraSens = controlsSettings->Add(new PopupSliderChoiceFloat(&g_Config.fTouchCameraSensitivity, 0.1f, 5.0f, 1.0f, co->T("Camera drag sensitivity"), 0.1f, screenManager(), "x"));
+		cameraSens->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvX = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertX, co->T("Invert camera drag horizontally")));
+		cameraInvX->SetEnabledPtr(&g_Config.bTouchCameraDrag);
+		CheckBox *cameraInvY = controlsSettings->Add(new CheckBox(&g_Config.bTouchCameraInvertY, co->T("Invert camera drag vertically")));
+		cameraInvY->SetEnabledPtr(&g_Config.bTouchCameraDrag);
 
 		static const char *touchControlStyles[] = { "Classic", "Thin borders", "Glowing borders" };
 		View *style = touchSettings->Add(new PopupMultiChoice(&g_Config.iTouchButtonStyle, co->T("Button style"), touchControlStyles, 0, ARRAY_SIZE(touchControlStyles), I18NCat::CONTROLS, screenManager()));
@@ -1175,6 +1239,34 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	}
 }
 
+// Takes DATA.BIN apart in the background: a long job, many gigabytes of reads and writes.
+static std::atomic<bool> g_dataBinDumpRunning{false};
+
+static void StartDataBinDump(const Path &gamePath) {
+	if (g_dataBinDumpRunning.exchange(true)) {
+		g_OSD.Show(OSDType::MESSAGE_WARNING, "DATA.BIN is already being extracted");
+		return;
+	}
+	g_threadManager.EnqueueTask(new IndependentTask(TaskType::IO_BLOCKING, TaskPriority::LOW, [gamePath]() {
+		Mods::DumpOptions options;
+		options.progress = [](float progress) {
+			g_OSD.SetProgressBar("databin_dump", "Extracting DATA.BIN", 0.0f, 100.0f, progress * 100.0f, 0.0f);
+		};
+		Mods::DumpStats stats;
+		const Path destination = Mods::DefaultDumpFolder();
+		g_OSD.SetProgressBar("databin_dump", "Extracting DATA.BIN", 0.0f, 100.0f, 0.0f, 0.0f);
+		const bool ok = Mods::DumpDisc(gamePath, destination, options, &stats);
+		g_OSD.RemoveProgressBar("databin_dump", ok, 0.5f);
+		if (ok) {
+			g_OSD.Show(OSDType::MESSAGE_SUCCESS, "DATA.BIN extracted",
+				std::to_string(stats.written) + " files in " + destination.ToVisualString(), 10.0f);
+		} else {
+			g_OSD.Show(OSDType::MESSAGE_ERROR, "Could not extract DATA.BIN", stats.error, 10.0f);
+		}
+		g_dataBinDumpRunning = false;
+	}));
+}
+
 void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 	using namespace UI;
 
@@ -1211,6 +1303,26 @@ void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 	toolsGroup->Add(new Choice(sy->T("PSP Firmware")))->OnClick.Add([=](UI::EventParams &) {
 		screenManager()->push(new FirmwareScreen(gamePath_));
 	});
+
+	Choice *extractDataBin = tools->Add(new Choice(sy->T("Extract DATA.BIN...")));
+	extractDataBin->OnClick.Add([=](UI::EventParams &) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		if (gamePath_.empty()) {
+			g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Open the settings from the game"),
+				sy->T("ExtractNeedsGame", "Choose the game first: DATA.BIN is taken from its disc"), 8.0f);
+			return;
+		}
+		const std::string message = std::string(sy->T("ExtractDataBinPrompt",
+			"Extract the files of DATA.BIN, decrypted, to")) + "\n" + Mods::DefaultDumpFolder().ToVisualString() +
+			"\n" + std::string(sy->T("ExtractDataBinSpace", "It takes a few minutes and about 2 GB."));
+		screenManager()->push(new PromptScreen(gamePath_, message, di->T("Extract"), di->T("Cancel"), [path = gamePath_](bool yes) {
+			if (yes)
+				StartDataBinDump(path);
+		}));
+	});
+	tools->Add(new SettingHint(sy->T("Extract DATA.BIN Tip",
+		"Monster Hunter Portable 3rd HD: every file, named by its file id, ready to edit and put in a mod folder"), extractDataBin));
 }
 
 void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
@@ -1479,6 +1591,40 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	cheatSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
 	cheatSettings->Add(new CheckBox(&g_Config.bEnablePlugins, sy->T("Enable plugins")));
 
+	systemSettings->Add(new ItemHeader(sy->T("Mods")));
+	Choice *importMod = systemSettings->Add(new Choice(sy->T("Import mod...")));
+	importMod->OnClick.Add([this](UI::EventParams &e) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		System_BrowseForFolder(GetRequesterToken(), sy->T("Choose the folder of the mod"), Path(), [](std::string_view value, int) {
+			auto sy = GetI18NCategory(I18NCat::SYSTEM);
+			const Path modsFolder = ModImport::GetModsFolder();
+			const ModImport::Check check = ModImport::CheckImport(Path(value), modsFolder);
+			if (!check.mods.size()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Nothing to import"), check.problem, 8.0);
+				return;
+			}
+			const ModImport::Result result = ModImport::Import(check, modsFolder);
+			std::string imported;
+			for (const std::string &id : result.imported) {
+				if (!imported.empty())
+					imported += ", ";
+				imported += id;
+			}
+			if (!result.error.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Could not import the mod"), result.error, 8.0);
+			} else if (!result.backups.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported + " (" + std::string(sy->T("the old copy is in MODS/.backup")) + ")", 6.0);
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported, 5.0);
+			}
+		});
+	});
+	systemSettings->Add(new Choice(sy->T("Mods...")))->OnClick.Add([this](UI::EventParams &e) {
+		screenManager()->push(new ModsScreen(gamePath_));
+	});
+	systemSettings->Add(new SettingHint(sy->T("Import mod Tip", "Copies the mod folder (the one with mod.ini) to PSP/MODS in the memory stick. Mods... turns them on, for Monster Hunter Portable 3rd HD (NPJB-40001). Unpack downloaded archives first"), importMod));
+
+	systemSettings->Add(new ItemHeader(sy->T("PSP Settings")));
 	ChoiceGroup *pspSettings = systemSettings->Add(new ChoiceGroup(sy->T("PSP Settings")));
 
 	// The ordering here is simply mapping directly to PSP_SYSTEMPARAM_LANGUAGE_*.

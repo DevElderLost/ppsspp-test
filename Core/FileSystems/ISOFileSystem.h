@@ -105,6 +105,15 @@ private:
 	TreeEntry entireISO{};
 	std::string errorString_;
 
+	// Mods for the one game that has them (Core/Mods): DATA.BIN is read from the mods' view of it.
+	void SetUpMods();
+	size_t ReadDiscBytes(u64 position, u8 *out, size_t size);
+	bool ModArchivePos(const OpenFileEntry &e, u64 *archivePos, s64 *fileSize) const;
+	s64 EntrySize(const TreeEntry *e) const;
+	bool modsChecked_ = false;
+	bool modsAttached_ = false;
+	const TreeEntry *dataBin_ = nullptr;
+
 	void ReadDirectory(TreeEntry *root) const;
 	const TreeEntry *GetFromPath(std::string_view path, bool catchError = true);
 	std::string EntryFullPath(const TreeEntry *e);

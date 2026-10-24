@@ -30,6 +30,7 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/StringUtils.h"
 
+#include "Core/Config.h"
 #include "Core/System.h"
 #include "GPU/Common/PostShader.h"
 
@@ -299,6 +300,86 @@ const ShaderInfo *GetPostShaderInfo(std::string_view name) {
 			return &shaderInfo[i];
 	}
 	return nullptr;
+}
+
+static float ScreenFxClampf(float v, float lo, float hi) {
+	return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static bool ScreenFxGradeActive() {
+	return g_Config.iScreenFxBrightness != 0 || g_Config.iScreenFxContrast != 0 ||
+		g_Config.iScreenFxGamma != 100 || g_Config.iScreenFxSaturation != 100;
+}
+
+unsigned ScreenFxSignature() {
+	unsigned sig = 0;
+	if (g_Config.bScreenFxFXAA)
+		sig |= SCREENFX_FXAA;
+	if (ScreenFxGradeActive())
+		sig |= SCREENFX_GRADE;
+	if (g_Config.bScreenFxCAS && g_Config.iScreenFxCASLevel > 0)
+		sig |= SCREENFX_CAS;
+	if (g_Config.bScreenFxHDR || (g_Config.bScreenFxDeband && g_Config.iScreenFxDebandLevel > 0))
+		sig |= SCREENFX_HDR_DEBAND;
+	return sig;
+}
+
+void AppendScreenFxChain(std::vector<const ShaderInfo *> *chain) {
+	const unsigned sig = ScreenFxSignature();
+	if (!sig)
+		return;
+	std::vector<const ShaderInfo *> fx;
+	auto add = [&](unsigned bit, std::string_view name) {
+		if (!(sig & bit))
+			return;
+		if (const ShaderInfo *info = GetPostShaderInfo(name))
+			fx.push_back(info);
+		else
+			WARN_LOG(Log::G3D, "Screen effect shader '%.*s' is missing", (int)name.size(), name.data());
+	};
+	// Same pass order as the tiny_computer effects chain: FXAA -> colour -> CAS -> HDR -> deband.
+	add(SCREENFX_FXAA, "FXAA");
+	add(SCREENFX_GRADE, "ScreenFxGrade");
+	add(SCREENFX_CAS, "ScreenFxCAS");
+	add(SCREENFX_HDR_DEBAND, "ScreenFxHDR");
+
+	// A shader that reads the previous frame has to be the last one in the chain.
+	size_t pos = chain->size();
+	if (!chain->empty() && chain->back()->usePreviousFrame)
+		pos--;
+	chain->insert(chain->begin() + pos, fx.begin(), fx.end());
+}
+
+bool GetScreenFxSettings(const ShaderInfo *info, float out[4]) {
+	if (!info || info->section.compare(0, 8, "ScreenFx") != 0)
+		return false;
+	out[0] = out[1] = out[2] = out[3] = 0.0f;
+	if (info->section == "ScreenFxGrade") {
+		// Same mapping as the tiny_computer colour pass: brightness is added, contrast is a 0.5..2 factor.
+		out[0] = ScreenFxClampf(g_Config.iScreenFxBrightness / 100.0f, -1.0f, 1.0f);
+		out[1] = ScreenFxClampf(1.0f + g_Config.iScreenFxContrast / 100.0f, 0.5f, 2.0f);
+		out[2] = ScreenFxClampf(g_Config.iScreenFxGamma / 100.0f, 0.1f, 5.0f);
+		out[3] = ScreenFxClampf(g_Config.iScreenFxSaturation / 100.0f, 0.0f, 2.0f);
+	} else if (info->section == "ScreenFxCAS") {
+		out[0] = ScreenFxClampf(g_Config.iScreenFxCASLevel / 100.0f, 0.0f, 1.0f);
+	} else if (info->section == "ScreenFxHDR") {
+		out[0] = g_Config.bScreenFxHDR ? 1.0f : 0.0f;
+		out[1] = g_Config.bScreenFxDeband ? ScreenFxClampf(g_Config.iScreenFxDebandLevel / 100.0f, 0.0f, 2.0f) : 0.0f;
+	}
+	return true;
+}
+
+void ResetScreenFxSettings() {
+	g_Config.bScreenFxFXAA = false;
+	g_Config.bScreenFxHDR = false;
+	g_Config.bScreenFxCAS = false;
+	g_Config.iScreenFxCASLevel = 50;
+	g_Config.bScreenFxDeband = false;
+	g_Config.iScreenFxDebandLevel = 100;
+	g_Config.iScreenFxBrightness = 0;
+	g_Config.iScreenFxContrast = 0;
+	g_Config.iScreenFxGamma = 100;
+	g_Config.iScreenFxSaturation = 100;
 }
 
 std::vector<const ShaderInfo *> GetPostShaderChain(const std::string &name) {

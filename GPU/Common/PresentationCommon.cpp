@@ -35,6 +35,7 @@
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
 #include "Core/HW/Display.h"
+#include "GPU/Common/FillScreen.h"
 #include "GPU/Common/Overlay.h"
 #include "GPU/Common/PostShader.h"
 #include "GPU/Common/PresentationCommon.h"
@@ -124,7 +125,9 @@ void CalculateDisplayOutputRect(const DisplayLayoutConfig &config, FRect *rc, fl
 
 	bool rotated = rotation == ROTATION_LOCKED_VERTICAL || rotation == ROTATION_LOCKED_VERTICAL180;
 
-	bool stretch = config.bDisplayStretch && !config.bDisplayIntegerScale;
+	// Fill screen: the game has widened its view to the display's shape, so the picture covers all of it.
+	const bool fillScreen = FillScreen::Active();
+	bool stretch = (config.bDisplayStretch && !config.bDisplayIntegerScale) || fillScreen;
 
 	float offsetX = config.fDisplayOffsetX;
 	float offsetY = config.fDisplayOffsetY;
@@ -181,7 +184,7 @@ void CalculateDisplayOutputRect(const DisplayLayoutConfig &config, FRect *rc, fl
 		}
 	}
 
-	if (config.bDisplayIntegerScale) {
+	if (config.bDisplayIntegerScale && !fillScreen) {
 		float wDim = 480.0f;
 		if (rotated) {
 			wDim = 272.0f;
@@ -303,6 +306,9 @@ void PresentationCommon::CalculatePostShaderUniforms(int bufferWidth, int buffer
 	uniforms->setting[1] = GetShaderSettingValue(shaderInfo, 1, "SettingCurrentValue2");
 	uniforms->setting[2] = GetShaderSettingValue(shaderInfo, 2, "SettingCurrentValue3");
 	uniforms->setting[3] = GetShaderSettingValue(shaderInfo, 3, "SettingCurrentValue4");
+
+	// The built-in screen effects take their values from the config instead of the per-shader settings.
+	GetScreenFxSettings(shaderInfo, uniforms->setting);
 }
 
 static std::string ReadShaderSrc(const Path &filename) {
@@ -335,9 +341,13 @@ bool PresentationCommon::UpdatePostShader(const DisplayLayoutConfig &config) {
 	}
 
 	std::vector<const ShaderInfo *> shaderInfo;
-	if (!g_Config.vPostShaderNames.empty()) {
+	screenFxSignature_ = ScreenFxSignature();
+	if (!g_Config.vPostShaderNames.empty() || screenFxSignature_) {
 		ReloadAllPostShaderInfo(draw_);
-		shaderInfo = GetFullPostShadersChain(g_Config.vPostShaderNames);
+		if (!g_Config.vPostShaderNames.empty())
+			shaderInfo = GetFullPostShadersChain(g_Config.vPostShaderNames);
+		// The built-in screen effects (Graphics > Screen effects) go after the chosen shaders.
+		AppendScreenFxChain(&shaderInfo);
 	}
 
 	DestroyPostShader();

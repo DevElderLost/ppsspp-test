@@ -242,6 +242,39 @@ private:
 	ControlMapper* controlMapper_;
 };
 
+// A finger on a part of the screen that has no touch control turns the camera: the drag drives the
+// right analog stick, by how fast the finger moves, and the stick lets go as the finger stops. It
+// goes through the same right analog mapping as the on-screen custom right stick, so with "Right
+// analog stick custom" it can press buttons or move the left stick, and without it the plain right
+// stick is moved.
+class CameraDragGamepad : public UI::View {
+public:
+	explicit CameraDragGamepad(UI::LayoutParams *layoutParams) : UI::View(layoutParams) {}
+	~CameraDragGamepad();
+
+	bool Touch(const TouchInput &input) override;
+	void Update() override;
+
+protected:
+	std::string DescribeText() const override { return "camera-drag"; }
+
+private:
+	bool InZone(float x) const;
+	void Release();
+
+	int dragPointerId_ = -1;
+	float lastX_ = 0.0f;
+	float lastY_ = 0.0f;
+	float downX_ = 0.0f;
+	float downY_ = 0.0f;
+	float pendingX_ = 0.0f;  // Pixels dragged since the last Update.
+	float pendingY_ = 0.0f;
+	float outX_ = 0.0f;  // What the stick is set to, -1 to 1.
+	float outY_ = 0.0f;
+	double lastUpdate_ = 0.0;
+	bool driving_ = false;  // The stick is currently held away from the center.
+};
+
 // Just edit this to add new image, shape or button function
 namespace CustomKeyData {
 	// Image list

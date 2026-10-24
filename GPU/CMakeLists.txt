@@ -114,6 +114,10 @@ set(GPU_SOURCES
 	Common/GPUStateUtils.h
 	Common/DrawEngineCommon.cpp
 	Common/DrawEngineCommon.h
+	Common/PlanarShadows.cpp
+	Common/PlanarShadows.h
+	Common/FillScreen.cpp
+	Common/FillScreen.h
 	Common/Overlay.cpp
 	Common/Overlay.h
 	Common/PresentationCommon.cpp
