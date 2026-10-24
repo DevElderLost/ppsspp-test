@@ -26,6 +26,8 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/ErrorCodes.h"
+#include "Core/HLE/KUBridge.h"
+#include "Core/MIPS/MeCore.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/Interpreter.h"
@@ -60,6 +62,7 @@
 #include "sceKernelInterrupt.h"
 #include "sceKernelThread.h"
 #include "Core/Mods/ModEngine.h"
+#include "PopsBoot.h"
 #include "sceKernelMemory.h"
 #include "sceKernelModule.h"
 #include "sceKernelMutex.h"
@@ -159,6 +162,8 @@ void __KernelInit()
 	__NetAdhocMatchingInit();
 	__VaudioInit();
 	__CheatInit();
+	__KUBridgeInit();
+	MeCore::KernelInit();
 	__HeapInit();
 	__DmacInit();
 	__AudioCodecInit();
@@ -196,6 +201,7 @@ void __KernelShutdown()
 	kernelObjects.Clear();
 
 	__RegShutdown();
+	__PopsBootShutdown();
 	__HttpShutdown();
 	__OpenPSIDShutdown();
 	__UsbCamShutdown();
@@ -251,8 +257,11 @@ void __KernelDoState(PointerWrap &p)
 		Do(p, kernelRunning);
 		kernelObjects.DoState(p);
 
-		if (s >= 2)
+		if (s >= 2) {
 			Do(p, registeredExitCbId);
+		} else if (p.mode == p.MODE_READ) {
+			registeredExitCbId = 0;
+		}
 	}
 
 	{
@@ -294,6 +303,7 @@ void __KernelDoState(PointerWrap &p)
 		__MpegDoState(p);
 		__MpegBaseDoState(p);
 		__VideocodecDoState(p);
+		__KUBridgeDoState(p);
 		__NetDoState(p);
 		__NetAdhocDoState(p);
 		__PowerDoState(p);
@@ -320,6 +330,7 @@ void __KernelDoState(PointerWrap &p)
 		__DmacDoState(p);
 		__UsbCamDoState(p);
 		__NpDrmDoState(p);
+		__PopsBootDoState(p);
 
 		// IMPORTANT! Add new sections last!
 	}
@@ -345,6 +356,10 @@ std::string __KernelStateSummary() {
 
 void sceKernelExitGame() {
 	INFO_LOG(Log::sceKernel, "sceKernelExitGame");
+	if (__KernelExitToVSH(currentMIPS)) {
+		hleNoLogVoid();
+		return;
+	}
 	__KernelSwitchOffThread("game exited");
 	Core_Stop();
 
@@ -355,6 +370,10 @@ void sceKernelExitGame() {
 void sceKernelExitGameWithStatus()
 {
 	INFO_LOG(Log::sceKernel, "sceKernelExitGameWithStatus");
+	if (__KernelExitToVSH(currentMIPS)) {
+		hleNoLogVoid();
+		return;
+	}
 	__KernelSwitchOffThread("game exited");
 	Core_Stop();
 
@@ -422,11 +441,12 @@ int sceKernelDcacheInvalidateRange(u32 addr, int size)
 	return hleNoLog(0);
 }
 
-int sceKernelIcacheInvalidateRange(u32 addr, int size) {
+
+int sceKernelIcacheInvalidateRange(MIPSState *mips, u32 addr, int size) {
 	// A code overlay was just copied into place (see Core/Mods).
 	Mods::Manager::Instance().OnCodeLoaded();
 	if (size != 0) {
-		currentMIPS->InvalidateICacheRangeDeferred(addr, size);
+		mips->InvalidateICacheRangeDeferred(addr, size);
 		Core_ReenterDispatcher();
 	}
 	return hleLogDebug(Log::CPU, 0);
@@ -485,26 +505,26 @@ int sceKernelDcacheWritebackInvalidateAll() {
 	return hleLogDebug(Log::CPU, 0, "Dcache invalidated");
 }
 
-u32 sceKernelIcacheInvalidateAll() {
+u32 sceKernelIcacheInvalidateAll(MIPSState *mips) {
 	// A code overlay may have just been copied into place (see Core/Mods).
 	Mods::Manager::Instance().OnCodeLoaded();
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache invalidated - should clear JIT someday");
 #endif
 	// Note that this doesn't actually fully invalidate all with such a large range.
-	currentMIPS->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
+	mips->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
 	Core_ReenterDispatcher();
 	return hleLogDebug(Log::CPU, 0, "Icache invalidated");
 }
 
-u32 sceKernelIcacheClearAll() {
+u32 sceKernelIcacheClearAll(MIPSState *mips) {
 	// A code overlay may have just been copied into place (see Core/Mods).
 	Mods::Manager::Instance().OnCodeLoaded();
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache cleared - should clear JIT someday");
 #endif
 	// Note that this doesn't actually fully invalidate all with such a large range.
-	currentMIPS->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
+	mips->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
 	Core_ReenterDispatcher();
 	return hleLogDebug(Log::CPU, 0, "Icache cleared");
 }
@@ -590,7 +610,9 @@ void KernelObjectPool::DoState(PointerWrap &p) {
 	}
 
 	if (p.mode == p.MODE_READ) {
-		hleCurrentThreadName = nullptr;
+		// The current thread is deleted with the rest. Until sceKernelThread loads the new one,
+		// nothing should look at it.
+		__KernelForgetCurrentThread();
 		kernelObjects.Clear();
 	}
 
@@ -918,6 +940,11 @@ const HLEFunction ThreadManForUser[] =
 	{0x65F54FFB, &WrapI_IUU<_sceKernelAllocateTlspl>,                "_sceKernelAllocateTlspl",                   'i', "ixp"     },
 };
 
+// The type picks one of the kernel's preset stack sizes. This is enough for any of them.
+static u32 sceKernelExtendKernelStack(MIPSState *mipsState, int type, u32 cb, u32 arg) {
+	return sceKernelExtendThreadStack(mipsState, 0x4000, cb, arg);
+}
+
 const HLEFunction ThreadManForKernel[] =
 {
 	{0xCEADEB47, &WrapI_U<sceKernelDelayThread>,                     "sceKernelDelayThread",                      'i', "x",      HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED | HLE_KERNEL_SYSCALL },
@@ -972,7 +999,7 @@ const HLEFunction ThreadManForKernel[] =
 	{0xB736E9FF, &WrapI_IU<sceKernelFreeVpl>,                        "sceKernelFreeVpl",                          'i', "ix",     HLE_KERNEL_SYSCALL },
 	{0x1D371B8A, &WrapI_IU<sceKernelCancelVpl>,                      "sceKernelCancelVpl",                        'i', "ix",     HLE_KERNEL_SYSCALL },
 	{0x39810265, &WrapI_IU<sceKernelReferVplStatus>,                 "sceKernelReferVplStatus",                   'i', "ip",     HLE_KERNEL_SYSCALL },
-	{0xBC31C1B9, nullptr, "sceKernelExtendKernelStack"},
+	{0xBC31C1B9, &WrapU_IUU<sceKernelExtendKernelStack>,            "sceKernelExtendKernelStack",                'x', "ixx",    HLE_KERNEL_SYSCALL },
 	// New entries must go here at the end, not inserted earlier in this table - the funcindex
 	// (this array position) gets baked directly into resolved-import syscall opcodes written
 	// into guest RAM (see GetSyscallOp() in HLE.cpp), which savestates capture verbatim. Inserting
@@ -993,15 +1020,20 @@ const HLEFunction ThreadManForKernel[] =
 	{0x33BE4024, &WrapI_IU<sceKernelReferMsgPipeStatus>,             "sceKernelReferMsgPipeStatus",               'i', "ip",     HLE_KERNEL_SYSCALL },
 	{0xD8199E4C, &WrapI_IU<sceKernelReferFplStatus>,                 "sceKernelReferFplStatus",                   'i', "ip",     HLE_KERNEL_SYSCALL },
 	{0x5F32BEAA, &WrapU_IU<sceKernelReferVTimerStatus>,              "sceKernelReferVTimerStatus",                'x', "ix",     HLE_KERNEL_SYSCALL },
-	// NOT added on purpose, even though we implement all four for user mode already:
-	// sceKernelCreateMutex (0xB7D098C6), sceKernelLockMutex (0xB011B11F), sceKernelUnlockMutex
-	// (0x6B30100F) and sceKernelAllocateFpl (0xD979E9BF). They are what the real flash0 NAND and
-	// ID storage drivers use to set themselves up while booting the VSH, and leaving them
-	// unresolved is load-bearing: the drivers fail their init early and the boot moves on. Resolve
-	// them and the drivers instead get all the way through to talking to the NAND controller, which
-	// we don't emulate - sceIdStorage_Service then polls 0xbd101300 forever, no plugin module ever
-	// starts, and the boot is dead where it used to reach the shell. Adding these needs NAND MMIO
-	// (or HLE'ing sceIdStorage/sceNand above the driver) to land first.
+	// Yabause-PSP's me.prx.
+	{0x30FD48F0, &WrapI_IUUU<sceKernelPollEventFlag>,                "sceKernelPollEventFlag",                    'i', "ixxp",   HLE_KERNEL_SYSCALL },
+	{0XD979E9BF, &WrapI_IUU<sceKernelAllocateFpl>,                   "sceKernelAllocateFpl",                      'i', "ixx",    HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED | HLE_KERNEL_SYSCALL },
+	// HACK WARNING!
+	//
+	// NOT added on purpose, even though we implement all three for user mode already:
+	// sceKernelCreateMutex (0xB7D098C6), sceKernelLockMutex (0xB011B11F) and sceKernelUnlockMutex
+	// (0x6B30100F). They are what the real flash0 NAND and ID storage drivers use to set themselves
+	// up while booting the VSH, and leaving them unresolved is load-bearing: the drivers fail their
+	// init early and the boot moves on. Resolve them and the drivers instead get all the way through
+	// to talking to the NAND controller, which we don't emulate - sceIdStorage_Service then polls
+	// 0xbd101300 forever, no plugin module ever starts, and the boot is dead where it used to reach
+	// the shell. Adding these needs NAND MMIO (or HLE'ing sceIdStorage/sceNand above the driver) to
+	// land first. sceKernelAllocateFpl (below) was in this list, but the boot reaches the XMB with it.
 };
 
 void Register_ThreadManForUser()
@@ -1036,6 +1068,10 @@ static int sceKernelExitVSH(u32 paramPtr) {
 	}
 
 	INFO_LOG(Log::sceKernel, "sceKernelExitVSH");
+	// In a game, the same as sceKernelExitGame.
+	if (__KernelExitToVSH(currentMIPS)) {
+		return hleNoLog(0);
+	}
 	__KernelSwitchOffThread("VSH exited");
 	Core_Stop();
 
@@ -1045,14 +1081,14 @@ static int sceKernelExitVSH(u32 paramPtr) {
 
 // The VSH's own version of sceKernelLoadExec, used for pushing a game to run over USB/WLAN
 // (e.g. from a PC) rather than loading it from a file already on the memory stick/UMD.
-static int sceKernelLoadExecBufferVSHUsbWlan(int bufferSize, u32 bufferAddr, u32 paramPtr) {
+static int sceKernelLoadExecBufferVSHUsbWlan(MIPSState *mips, int bufferSize, u32 bufferAddr, u32 paramPtr) {
 	if (!Memory::IsValidRange(bufferAddr, bufferSize)) {
 		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "invalid buffer");
 	}
 
 	const u8 *data = Memory::GetPointerUnchecked(bufferAddr);
 	std::string error_string;
-	if (!__KernelLoadExecFromBuffer(currentMIPS, data, (size_t)bufferSize, paramPtr, &error_string)) {
+	if (!__KernelLoadExecFromBuffer(mips, data, (size_t)bufferSize, paramPtr, &error_string)) {
 		Core_HLEError("sceKernelLoadExecBufferVSHUsbWlan failed: " + error_string);
 		return hleLogError(Log::sceKernel, -1, "failed: %s", error_string.c_str());
 	}
@@ -1116,16 +1152,10 @@ void Register_LoadExecForKernel()
 	RegisterHLEModule("LoadExecForKernel", ARRAY_SIZE(LoadExecForKernel), LoadExecForKernel);
 }
 
+// Only what's implemented: the rest is left to the firmware's exceptionman.prx when one is loaded.
 const HLEFunction ExceptionManagerForKernel[] =
 {
-	{0X3FB264FC, nullptr,                                            "sceKernelRegisterExceptionHandler",         '?', ""        },
-	{0X5A837AD4, nullptr,                                            "sceKernelRegisterPriorityExceptionHandler", '?', ""        },
 	{0x565C0B0E, &WrapI_V<sceKernelRegisterDefaultExceptionHandler>, "sceKernelRegisterDefaultExceptionHandler",  'i', "",       HLE_KERNEL_SYSCALL },
-	{0X1AA6CFFA, nullptr,                                            "sceKernelReleaseExceptionHandler",          '?', ""        },
-	{0XDF83875E, nullptr,                                            "sceKernelGetActiveDefaultExceptionHandler", '?', ""        },
-	{0X291FF031, nullptr,                                            "sceKernelReleaseDefaultExceptionHandler",   '?', ""        },
-	{0X15ADC862, nullptr,                                            "sceKernelRegisterNmiHandler",               '?', ""        },
-	{0XB15357C9, nullptr,                                            "sceKernelReleaseNmiHandler",                '?', ""        },
 };
 
 void Register_ExceptionManagerForKernel()
@@ -1775,4 +1805,40 @@ const char *KernelErrorToString(u32 err) {
 	default:
 		return nullptr;
 	}
+}
+
+enum : u32 {
+	PSP_BOOT_DISC = 0x20,
+	PSP_BOOT_MS = 0x40,
+	PSP_INIT_KEYCONFIG_GAME = 0x200,
+	PSP_INIT_KEYCONFIG_POPS = 0x300,
+};
+
+// The POPS manager stays resident only when booted from the memory stick.
+static u32 sceKernelBootFrom() {
+	return hleLogInfo(Log::sceKernel, PopsBootActive() ? PSP_BOOT_MS : PSP_BOOT_DISC);
+}
+
+// The key configuration the kernel was booted with. Also known as sceKernelInitKeyConfig.
+static u32 sceKernelApplicationType() {
+	return hleLogInfo(Log::sceKernel, PopsBootActive() ? PSP_INIT_KEYCONFIG_POPS : PSP_INIT_KEYCONFIG_GAME);
+}
+
+static int sceKernelGetChunk(int chunkId) {
+	return hleLogWarning(Log::sceKernel, -1, "UNIMPL chunk %d", chunkId);
+}
+
+static int InitForKernel_9D33A110() {
+	return hleLogWarning(Log::sceKernel, 0, "UNIMPL");
+}
+
+const HLEFunction InitForKernel[] = {
+	{0x27932388, &WrapU_V<sceKernelBootFrom>,                        "sceKernelBootFrom",                         'x', "",       HLE_KERNEL_SYSCALL },
+	{0x7233B5BC, &WrapU_V<sceKernelApplicationType>,                 "sceKernelApplicationType",                  'x', "",       HLE_KERNEL_SYSCALL },
+	{0x2C6E9FE9, &WrapI_I<sceKernelGetChunk>,                        "sceKernelGetChunk",                         'i', "i",      HLE_KERNEL_SYSCALL },
+	{0x9D33A110, &WrapI_V<InitForKernel_9D33A110>,                   "InitForKernel_9D33A110",                    'i', "",       HLE_KERNEL_SYSCALL },
+};
+
+void Register_InitForKernel() {
+	RegisterHLEModule("InitForKernel", ARRAY_SIZE(InitForKernel), InitForKernel);
 }

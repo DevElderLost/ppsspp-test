@@ -111,6 +111,9 @@
     <ClInclude Include="Common\PlanarShadows.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\FillScreen.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\DepalettizeShaderCommon.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -215,6 +218,9 @@
     </ClInclude>
     <ClInclude Include="Software\RasterizerRectangle.h">
       <Filter>Software</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\Overlay.h">
+      <Filter>Common</Filter>
     </ClInclude>
     <ClInclude Include="Common\PresentationCommon.h">
       <Filter>Common</Filter>
@@ -368,6 +374,9 @@
     <ClCompile Include="Common\PlanarShadows.cpp">
       <Filter>Common</Filter>
     </ClCompile>
+    <ClCompile Include="Common\FillScreen.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
     <ClCompile Include="Common\SplineCommon.cpp">
       <Filter>Common</Filter>
     </ClCompile>
@@ -478,6 +487,9 @@
     </ClCompile>
     <ClCompile Include="Software\RasterizerRectangle.cpp">
       <Filter>Software</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\Overlay.cpp">
+      <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\PresentationCommon.cpp">
       <Filter>Common</Filter>

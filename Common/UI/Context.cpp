@@ -273,10 +273,16 @@ void UIContext::MeasureText(const FontStyle &style, float scaleX, float scaleY, 
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
 		Draw()->MeasureText(AtlasFontFromStyle(style), str, x, y);
 	} else {
-		textDrawer_->SetOrCreateFont(style);
+		// Switching fonts costs two lookups, and most measuring is done in the current style.
+		const bool switchFont = !(style == *fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(style);
+		}
 		textDrawer_->SetFontScale(scaleX, scaleY);
 		textDrawer_->MeasureString(str, x, y);
-		textDrawer_->SetOrCreateFont(*fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(*fontStyle_);
+		}
 	}
 }
 
@@ -287,10 +293,16 @@ void UIContext::MeasureTextRect(const FontStyle &style, float scaleX, float scal
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
 		Draw()->MeasureTextRect(AtlasFontFromStyle(style), str, maxWidth, x, y, align);
 	} else {
-		textDrawer_->SetOrCreateFont(style);
+		// Switching fonts costs two lookups, and most measuring is done in the current style.
+		const bool switchFont = !(style == *fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(style);
+		}
 		textDrawer_->SetFontScale(scaleX, scaleY);
 		textDrawer_->MeasureStringRect(str, maxWidth, x, y, align);
-		textDrawer_->SetOrCreateFont(*fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(*fontStyle_);
+		}
 	}
 }
 
@@ -375,6 +387,24 @@ void UIContext::DrawTextShadowRect(std::string_view str, const Bounds &bounds, u
 	Bounds shadowBounds(bounds.x+2, bounds.y+2, bounds.w, bounds.h);
 	DrawTextRect(str, shadowBounds, alpha, align);
 	DrawTextRect(str, bounds, color, align);
+}
+
+void UIContext::FillRoundRect(const UI::Drawable &drawable, const Bounds &bounds, float radius) {
+	FillRoundRect(drawable, bounds, radius, RoundCorners::All);
+}
+
+void UIContext::FillRoundRect(const UI::Drawable &drawable, const Bounds &bounds, float radius, RoundCorners corners) {
+	// Only draw if alpha is non-zero.
+	if ((drawable.color & 0xFF000000) == 0)
+		return;
+	switch (drawable.type) {
+	case UI::DRAW_SOLID_COLOR:
+		uidrawbuffer_->DrawRoundRect(bounds, radius, drawable.color, RoundRectStyle::Filled, corners);
+		break;
+	default:
+		// Not supported
+		break;
+	}
 }
 
 void UIContext::FillRect(const UI::Drawable &drawable, const Bounds &bounds) {

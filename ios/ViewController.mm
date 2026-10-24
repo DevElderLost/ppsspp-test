@@ -1,6 +1,7 @@
 #import "ios/ViewController.h"
 #import "ios/Controls.h"
 #import "ios/IAPManager.h"
+#import "ios/ExternalDisplaySceneDelegate.h"
 #if !PPSSPP_PLATFORM(TVOS)
 #import "ios/CameraHelper.h"
 #import <Photos/Photos.h>
@@ -13,6 +14,7 @@
 #include <thread>
 #include "Common/GPU/GraphicsContext.h"
 #include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
+#include "Common/GPU/Metal/MetalGraphicsContext.h"
 #include "Common/System/Request.h"
 #include "Common/System/System.h"
 #include "Common/Input/InputState.h"
@@ -148,6 +150,8 @@ static void VulkanRenderLoop(GraphicsContext *graphicsContext, CAMetalLayer *met
 #if !PPSSPP_PLATFORM(TVOS)
 @property (strong, nonatomic) NSOperationQueue *accelerometerQueue;
 @property (strong, nonatomic) CMMotionManager *motionManager;
+// The UISceneAccessoryRegistration for an external display, on iOS 27 and later.
+@property (strong, nonatomic) id externalDisplayRegistration;
 #endif
 
 @end
@@ -221,6 +225,15 @@ static int GetPickerRequestId(id picker) {
 
 - (void)shutdown {
 	self.gameController = nil;
+#if !PPSSPP_PLATFORM(TVOS) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000
+	if (@available(iOS 27.0, *)) {
+		if (self.externalDisplayRegistration) {
+			// After a restart, the new view controller registers again if the backend can use it.
+			[self unregisterSceneAccessory:self.externalDisplayRegistration];
+			self.externalDisplayRegistration = nil;
+		}
+	}
+#endif
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 
 	_dbg_assert_(sharedViewController != nil);
@@ -311,6 +324,21 @@ static int GetPickerRequestId(id picker) {
 	} else {
 		INFO_LOG(Log::G3D, "No accelerometer available, not starting updates.");
 	}
+
+	if (self.motionManager.gyroAvailable) {
+		self.motionManager.gyroUpdateInterval = 1.0 / 60.0;
+		INFO_LOG(Log::G3D, "Starting gyro updates.");
+
+		// Same serial queue as the accelerometer, so the two don't race in the tilt fusion.
+		[self.motionManager startGyroUpdatesToQueue:self.accelerometerQueue
+							withHandler:^(CMGyroData *gyroData, NSError *error) {
+			if (error) {
+				NSLog(@"Gyro error: %@", error);
+				return;
+			}
+			ProcessGyroData(gyroData);
+		}];
+	}
 #endif
 
 	// Spin up the render thread, which in turn starts the emu thread.
@@ -322,10 +350,18 @@ static int GetPickerRequestId(id picker) {
 	[self requestExitVulkanRenderLoop];
 
 #if !PPSSPP_PLATFORM(TVOS)
+	g_touchTracker.CancelAll();
+#endif
+
+#if !PPSSPP_PLATFORM(TVOS)
 	// Stop accelerometer updates
 	if (self.motionManager.accelerometerActive) {
 		INFO_LOG(Log::G3D, "Stopping accelerometer updates");
 		[self.motionManager stopAccelerometerUpdates];
+	}
+	if (self.motionManager.gyroActive) {
+		INFO_LOG(Log::G3D, "Stopping gyro updates");
+		[self.motionManager stopGyroUpdates];
 	}
 #endif
 }
@@ -595,16 +631,32 @@ static int GetPickerRequestId(id picker) {
 	keyboardInputView_ = [[KeyboardInputView alloc] initWithFrame:CGRectZero];
 	[self.view addSubview:keyboardInputView_];
 
-	graphicsContext = new VulkanGraphicsContext();
+	if (g_Config.iGPUBackend == (int)GPUBackend::METAL) {
+		graphicsContext = new MetalGraphicsContext();
+	} else {
+		graphicsContext = new VulkanGraphicsContext();
+	}
 	std::string errorMessage;
 	if (!graphicsContext->InitAPI(nullptr, &g_Config.sVulkanDevice, &errorMessage)) {
 		delete graphicsContext;
 		graphicsContext = nullptr;  // The render loop and shutdown check for this.
 		// There's no other backend to fall back to.
-		ERROR_LOG(Log::System, "Failed to initialize Vulkan: %s", errorMessage.c_str());
+		ERROR_LOG(Log::System, "Failed to initialize graphics: %s", errorMessage.c_str());
 	}
 
 	[self updateResolutionWithView:self.view];
+
+#if !PPSSPP_PLATFORM(TVOS) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000
+	// From iOS 27, an external display scene only goes to apps that register for one like this. Earlier
+	// versions go by the Info.plist role instead. Without the scene, iOS mirrors the phone.
+	if (@available(iOS 27.0, *)) {
+		if (g_Config.iGPUBackend == (int)GPUBackend::METAL || g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
+			UISceneConfiguration *sceneConfiguration = [UISceneConfiguration new];
+			sceneConfiguration.delegateClass = [ExternalDisplaySceneDelegate class];
+			self.externalDisplayRegistration = [self registerSceneAccessory:[UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:sceneConfiguration]];
+		}
+	}
+#endif
 
 	[self setupFirstController];
 

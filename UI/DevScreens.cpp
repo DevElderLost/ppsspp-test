@@ -456,11 +456,11 @@ void JitDebugScreen::CreateViews() {
 	topbar->Add(new Choice(di->T("Enable All")))->OnClick.Handle(this, &JitDebugScreen::OnEnableAll);
 
 	vert->Add(topbar);
-	vert->Add(new ItemHeader(dev->T("Disabled JIT functionality")));
+	ChoiceGroup *disabledFlags = vert->Add(new ChoiceGroup(dev->T("Disabled JIT functionality")));
 
 	for (auto flag : jitDisableFlags) {
 		// Do not add translation of these.
-		vert->Add(new BitCheckBox(&g_Config.uJitDisableFlags, (uint32_t)flag.flag, flag.name));
+		disabledFlags->Add(new BitCheckBox(&g_Config.uJitDisableFlags, (uint32_t)flag.flag, flag.name));
 	}
 }
 
@@ -639,11 +639,11 @@ void FrameDumpTestScreen::CreateTabs() {
 	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 
 	AddTab("General", dev->T("Dumps"), [this](UI::LinearLayout *parent) {
-		parent->Add(new ItemHeader("GE Frame Dumps"));
+		ChoiceGroup *dumps = parent->Add(new ChoiceGroup("GE Frame Dumps"));
 
 		for (auto &file : files_) {
 			std::string url = framedumpsBaseUrl + file;
-			Choice *c = parent->Add(new Choice(file));
+			Choice *c = dumps->Add(new Choice(file));
 			c->SetTag(url);
 			c->OnClick.Add([this, url = Path(url)](UI::EventParams &e) {
 				INFO_LOG(Log::Common, "Trying to launch '%s'", url.c_str());
@@ -763,7 +763,7 @@ void TouchTestScreen::CreateViews() {
 	root_->Add(theTwo);
 
 #if !PPSSPP_PLATFORM(UWP)
-	static const char *renderingBackend[] = { "OpenGL", "(n/a)", "Direct3D 11", "Vulkan" };
+	static const char *renderingBackend[] = { "OpenGL", "(n/a)", "Direct3D 11", "Vulkan", "Metal" };
 	PopupMultiChoice *renderingBackendChoice = root_->Add(new PopupMultiChoice(&g_Config.iGPUBackend, gr->T("Backend"), renderingBackend, (int)GPUBackend::OPENGL, ARRAY_SIZE(renderingBackend), I18NCat::GRAPHICS, screenManager()));
 	renderingBackendChoice->OnChoice.Handle(this, &TouchTestScreen::OnRenderingBackend);
 
@@ -774,6 +774,8 @@ void TouchTestScreen::CreateViews() {
 		renderingBackendChoice->HideChoice((int)GPUBackend::DIRECT3D11);
 	if (!g_Config.IsBackendEnabled(GPUBackend::VULKAN))
 		renderingBackendChoice->HideChoice((int)GPUBackend::VULKAN);
+	if (!g_Config.IsBackendEnabled(GPUBackend::METAL))
+		renderingBackendChoice->HideChoice((int)GPUBackend::METAL);
 #endif
 
 #if PPSSPP_PLATFORM(ANDROID)

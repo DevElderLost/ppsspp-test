@@ -37,6 +37,7 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/StringUtils.h"
 
+#include "Core/Config.h"
 #include "Core/System.h"
 #include "GPU/Common/PostShader.h"
 

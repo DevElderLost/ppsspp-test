@@ -137,6 +137,8 @@ enum SystemKeyboardLayout {
 
 enum SystemProperty {
 	SYSPROP_NAME,
+	SYSPROP_DEVICE_NAME,  // The name the user gave the device, like "Henrik's iPhone". Empty if we can't get it.
+	SYSPROP_DEVICE_MODEL,  // What kind of device it is, like "iPhone" or "Mac". Empty if unknown.
 	SYSPROP_SYSTEMBUILD,
 	SYSPROP_LANGREGION,
 	SYSPROP_CPUINFO,
@@ -163,11 +165,12 @@ enum SystemProperty {
 	SYSPROP_HAS_KEYBOARD,
 	SYSPROP_KEYBOARD_IS_SOFT,
 	SYSPROP_HAS_ACCELEROMETER,  // Used to enable/disable tilt input settings
+	SYSPROP_HAS_GYRO,
 	SYSPROP_HAS_OPEN_DIRECTORY,
 	SYSPROP_HAS_LOGIN_DIALOG,
 	SYSPROP_HAS_TEXT_CLIPBOARD,
 	SYSPROP_HAS_TEXT_INPUT_DIALOG,  // Indicates that System_InputBoxGetString is available.
-	SYSPROP_HAS_DEEP_LINKS,  // ios-style deep links
+	SYSPROP_HAS_DEEP_LINKS,  // iOS deep links, Android content URIs
 
 	SYSPROP_CAN_CREATE_SHORTCUT,
 	SYSPROP_CAN_SHOW_FILE,
@@ -277,6 +280,7 @@ enum class SystemNotification {
 	CONFIG_LOADED,
 	BEFORE_CONFIG_SAVE_ON_EXIT,
 	TOP_LEVEL_CHANGED,  // NativeIsAtTopLevel() changed. From the render thread.
+	EXTERNAL_DISPLAY_CHANGED,  // g_Config.iExternalDisplay changed.
 };
 
 // I guess it's not super great architecturally to centralize this, since it's not general - but same with a lot of

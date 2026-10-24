@@ -34,6 +34,7 @@
 #include <clocale>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -136,6 +137,7 @@
 #include "UI/Background.h"
 #include "UI/BackgroundAudio.h"
 #include "UI/ControlMappingScreen.h"
+#include "UI/GamePacker.h"
 #include "UI/DevScreens.h"
 #include "UI/DiscordIntegration.h"
 #include "UI/EmuScreen.h"
@@ -189,6 +191,63 @@ std::string config_filename;
 // that consumes it also sees those writes - with a plain bool it could see the flag first and keep stale bounds.
 static std::atomic<bool> resized{false};
 
+// Secondary outputs are added, resized and removed through their own queue, not pendingMessages or
+// g_pendingClosures. Those run mid-frame, after BeginFrame, but creating or destroying a Vulkan swapchain
+// stops the render threads, so this runs before BeginFrame. It also runs in NativeInitGraphics before
+// deviceRestored, so a removal queued while the graphics were down lands before swapchains are recreated
+// (on a surface that may be gone). And it tracks completion for Native_RemoveOutputAndWait.
+struct OutputRequest {
+	enum class Type {
+		ADD,
+		RESIZE,
+		REMOVE,
+	};
+	Type type;
+	int id;
+	OutputRole role;
+	Draw::SwapchainDesc desc;
+	int width;
+	int height;
+};
+static std::mutex g_outputRequestLock;
+static std::condition_variable g_outputRequestsDoneCond;
+static std::vector<OutputRequest> g_outputRequests;
+// Counts requests queued and handled, for Native_RemoveOutputAndWait. Under g_outputRequestLock.
+static uint64_t g_outputRequestsQueued = 0;
+static uint64_t g_outputRequestsDone = 0;
+// Whether the outputs have swapchains, between NativeInitGraphics and NativeShutdownGraphics.
+static bool g_outputsLive = false;
+// The thread that handles the requests, which mustn't wait for them.
+static std::thread::id g_outputRequestThread;
+static std::atomic<int> g_nextOutputId{1};
+
+static void ProcessOutputRequests() {
+	std::vector<OutputRequest> requests;
+	uint64_t queued;
+	{
+		std::lock_guard<std::mutex> guard(g_outputRequestLock);
+		requests.swap(g_outputRequests);
+		queued = g_outputRequestsQueued;
+	}
+	for (const OutputRequest &request : requests) {
+		switch (request.type) {
+		case OutputRequest::Type::ADD: g_screenManager->AddOutput(request.id, request.role, request.desc); break;
+		case OutputRequest::Type::RESIZE: g_screenManager->ResizeOutput(request.id, request.width, request.height); break;
+		case OutputRequest::Type::REMOVE: g_screenManager->RemoveOutput(request.id); break;
+		}
+	}
+	std::lock_guard<std::mutex> guard(g_outputRequestLock);
+	g_outputRequestsDone = queued;
+	g_outputRequestThread = std::this_thread::get_id();
+	g_outputRequestsDoneCond.notify_all();
+}
+
+static void SetOutputsLive(bool live) {
+	std::lock_guard<std::mutex> guard(g_outputRequestLock);
+	g_outputsLive = live;
+	g_outputRequestsDoneCond.notify_all();
+}
+
 static int renderCounter = 0;
 
 struct PendingMessage {
@@ -208,6 +267,8 @@ static std::string g_savedAchievementsHost;
 static bool g_savedAchievementsHardcoreMode = false;
 static bool g_hasSavedAchievementsSettings = false;
 static bool g_nativeMainThreadReady = false;
+// Kept to apply again after a config reload.
+static CommandLineOptions g_cmdLineOptions;
 
 static std::mutex g_inputEventQueueLock;
 static std::vector<QueuedEvent> g_inputEventQueue;
@@ -408,6 +469,7 @@ std::thread *graphicsLoadThread;
 
 // globals
 Path boot_filename;
+Path boot_mountIso;
 
 // This is called before NativeInit so we do a little bit of initialization here.
 void NativeGetAppInfo(std::string *app_dir_name, std::string *app_nice_name, bool *landscape, std::string *version) {
@@ -651,15 +713,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 #elif PPSSPP_PLATFORM(WINDOWS)
 	// ...
 #else
-	std::string config;
-	if (getenv("XDG_CONFIG_HOME") != NULL)
-		config = getenv("XDG_CONFIG_HOME");
-	else if (getenv("HOME") != NULL)
-		config = getenv("HOME") + std::string("/.config");
-	else // Just in case
-		config = "./config";
-
-	g_Config.memStickDirectory = Path(config) / "ppsspp";
+	g_Config.memStickDirectory = GetDefaultDesktopMemStickDirectory();
 	if (getenv("HOME") != nullptr) {
 		g_Config.defaultCurrentDirectory = Path(getenv("HOME"));
 	} else {
@@ -671,6 +725,14 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	if (g_Config.currentDirectory.empty()) {
 		g_Config.currentDirectory = g_Config.defaultCurrentDirectory;
+	}
+
+	// --memstick replaces the memory stick, the config in it included, so it has to be in place before the config
+	// is loaded. ApplyToConfig() below sets it again, which changes nothing.
+	if (cmdLineOptions.memStick.has_value()) {
+		g_Config.memStickDirectory = Path(cmdLineOptions.memStick.value());
+		File::CreateFullPath(g_Config.memStickDirectory);
+		CreateSysDirectories();
 	}
 
 	// Mount a filesystem
@@ -692,11 +754,13 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	// Apply parsed command line options to config.
 	cmdLineOptions.ApplyToConfig();
+	g_cmdLineOptions = cmdLineOptions;
 
 	boot_filename.clear();
 	if (boot_filename.empty() && cmdLineOptions.bootVSH.value_or(false)) {
 		boot_filename = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
 	}
+	boot_mountIso = cmdLineOptions.mountIso.has_value() ? Path(cmdLineOptions.mountIso.value()) : Path();
 
 	if (cmdLineOptions.appendConfig.has_value()) {
 		g_Config.SetAppendedConfigIni(Path(cmdLineOptions.appendConfig.value()));
@@ -829,7 +893,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		}
 	} else if (skipLogo && !boot_filename.empty()) {
 		INFO_LOG(Log::System, "Launching EmuScreen with boot filename '%s'", boot_filename.c_str());
-		g_screenManager->switchScreen(new EmuScreen(boot_filename));
+		g_screenManager->switchScreen(new EmuScreen(boot_filename, boot_mountIso));
 	} else {
 		g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::DEFAULT));
 	}
@@ -934,6 +998,11 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 
 	g_screenManager->setUIContext(uiContext);
 	g_screenManager->setPostRenderCallback(&CallbackPostRender, nullptr);
+	// Live before the queue is processed: a removal that comes in while the outputs' swapchains are being
+	// recreated has to wait for the next frame, as its surface may be gone once it returns.
+	SetOutputsLive(true);
+	// An output removed while there was no device can't be recreated, its surface may be gone.
+	ProcessOutputRequests();
 	g_screenManager->deviceRestored(g_draw);
 
 	g_audioBackend = System_CreateAudioBackend();
@@ -1052,6 +1121,7 @@ void NativeShutdownGraphics(GraphicsContext *graphicsContext) {
 	if (g_screenManager) {
 		g_screenManager->deviceLost();
 	}
+	SetOutputsLive(false);
 	g_iconCache.ClearTextures();
 
 	if (gpu) {
@@ -1151,6 +1221,8 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 
 	g_GameManager.Update();
 
+	GamePacker::UpdateOnUIThread();
+
 	if (GetUIState() != UISTATE_INGAME) {
 		// Note: We do this from NativeFrame so that the graphics context is
 		// guaranteed valid, to be safe - g_gameInfoCache messes around with textures.
@@ -1184,6 +1256,8 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 		System_PostUIMessage(UIMessage::GPU_DISPLAY_RESIZED);
 #endif
 	}
+
+	ProcessOutputRequests();
 
 	// NOTE: We must begin the frame before update, so we can do texture size queries and stuff in Measure etc.
 	Draw::DebugFlags debugFlags = Draw::DebugFlags::NONE;
@@ -1432,6 +1506,8 @@ bool HandleGlobalMessage(UIMessage message, const std::string &value) {
 		INFO_LOG(Log::IO, "Reloading config after storage permission grant.");
 		g_Config.Reload();
 		PostLoadConfig();
+		// The reload reset what the command line set.
+		g_cmdLineOptions.ApplyToConfig();
 		g_Config.iGPUBackend = gpuBackend;
 		return true;
 	} else if (message == UIMessage::APP_RESUMED || message == UIMessage::GOT_FOCUS) {
@@ -1474,23 +1550,31 @@ void NativeTouch(const TouchInput &touch) {
 	g_inputEventQueue.push_back(ev);
 }
 
-// up, down
+// up, down. Presses arrive on the input thread, timed releases on the UI thread.
+static std::mutex g_wheelReleaseLock;
 static double g_wheelReleaseTime[2]{};
 
 static void ProcessWheelRelease(InputKeyCode keyCode, double now, bool keyPress) {
 	int dir = keyCode - NKCODE_EXT_MOUSEWHEEL_UP;
-	if (g_wheelReleaseTime[dir] != 0.0 && (keyPress || now >= g_wheelReleaseTime[dir])) {
-		g_wheelReleaseTime[dir] = 0.0;
+	bool release = false;
+	{
+		std::lock_guard<std::mutex> guard(g_wheelReleaseLock);
+		if (g_wheelReleaseTime[dir] != 0.0 && (keyPress || now >= g_wheelReleaseTime[dir])) {
+			g_wheelReleaseTime[dir] = 0.0;
+			release = true;
+		}
+		if (keyPress) {
+			float releaseTime = (float)g_Config.iMouseWheelUpDelayMs * (1.0f / 1000.0f);
+			g_wheelReleaseTime[dir] = now + releaseTime;
+		}
+	}
+
+	if (release) {
 		KeyInput key{};
 		key.deviceId = DEVICE_ID_MOUSE;
 		key.keyCode = keyCode;
 		key.flags = KeyInputFlags::UP;
 		NativeKey(key);
-	}
-
-	if (keyPress) {
-		float releaseTime = (float)g_Config.iMouseWheelUpDelayMs * (1.0f / 1000.0f);
-		g_wheelReleaseTime[dir] = now + releaseTime;
 	}
 }
 
@@ -1535,20 +1619,23 @@ bool NativeKey(const KeyInput &key) {
 #ifdef _DEBUG
 	// Debug hack: Randomize the language with F9!
 	if ((key.keyCode == NKCODE_F9 && (key.flags & KeyInputFlags::DOWN))) {
-		std::vector<File::FileInfo> tempLangs;
-		g_VFS.GetFileListing("lang", &tempLangs, "ini");
-		int x = rand() % tempLangs.size();
+		// We're on the input thread, and this recreates the views.
+		System_RunOnMainThread([]() {
+			std::vector<File::FileInfo> tempLangs;
+			g_VFS.GetFileListing("lang", &tempLangs, "ini");
+			int x = rand() % tempLangs.size();
 
-		g_Config.DoNotSaveSetting(&g_Config.sLanguageIni);
-		std::string_view code, part2;
-		if (SplitStringOnce(tempLangs[x].name, &code, &part2, '.')) {
-			g_Config.sLanguageIni = code;
-			INFO_LOG(Log::System, "Switching to random language: %s", g_Config.sLanguageIni.c_str());
-			if (g_i18nrepo.LoadIni(g_Config.sLanguageIni)) {
-				g_screenManager->RecreateAllViews();
-				System_Notify(SystemNotification::UI);
+			g_Config.DoNotSaveSetting(&g_Config.sLanguageIni);
+			std::string_view code, part2;
+			if (SplitStringOnce(tempLangs[x].name, &code, &part2, '.')) {
+				g_Config.sLanguageIni = code;
+				INFO_LOG(Log::System, "Switching to random language: %s", g_Config.sLanguageIni.c_str());
+				if (g_i18nrepo.LoadIni(g_Config.sLanguageIni)) {
+					g_screenManager->RecreateAllViews();
+					System_Notify(SystemNotification::UI);
+				}
 			}
-		}
+		});
 	}
 #endif
 
@@ -1616,12 +1703,21 @@ bool NativeKey(const KeyInput &key) {
 		g_controlMapper.Key(key);
 	}
 
-	// Ignore volume keys and stuff here - though we do send them through to the control mapper, so they can be mapped to PSP buttons.
+	// Leave volume keys to the OS, unless they're mapped (to L/R for example). Then they also reach the menus,
+	// and in game we consume them, repeats included, so the OS doesn't change the volume as well.
+	// The key mapping dialog gets them all (to be able to map them), and consumes them too.
+	bool volumeKey = false;
+	bool consumeVolumeKey = false;
 	switch (key.keyCode) {
 	case NKCODE_VOLUME_DOWN:
 	case NKCODE_VOLUME_UP:
 	case NKCODE_VOLUME_MUTE:
-		return false;
+		if (!(inputMode & InputMode::AllKeys) && !KeyMap::InputMappingToPspButton(InputMapping(key.deviceId, key.keyCode), nullptr)) {
+			return false;
+		}
+		volumeKey = true;
+		consumeVolumeKey = inputMode & (InputMode::Other | InputMode::AllKeys);
+		break;
 	default:
 		break;
 	}
@@ -1692,7 +1788,7 @@ bool NativeKey(const KeyInput &key) {
 		retval = false;
 		break;
 	case UI::KeyEventResult::IGNORE_KEY:
-		return false;
+		return consumeVolumeKey;
 	}
 
 	// Queue up the key event for synchronous processing in the UI.
@@ -1708,6 +1804,9 @@ bool NativeKey(const KeyInput &key) {
 	if (key.keyCode == NKCODE_BUTTON_MODE) {
 		// Tell the caller that we handled the key.
 		retval = true;
+	}
+	if (volumeKey) {
+		retval = consumeVolumeKey;
 	}
 
 	return retval;
@@ -1783,13 +1882,7 @@ void NativeMouseDelta(float dx, float dy) {
 	SendMouseDeltaAxis();
 }
 
-// TODO: Should include a device ID here, since accelerometers can be on pads for example (DualSense).
-void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
-	if (g_Config.iTiltInputType == TILT_NULL) {
-		// if tilt events are disabled, don't do anything special.
-		return;
-	}
-
+static void ProcessTiltVector(float tiltX, float tiltY, float tiltZ) {
 	// create the base coordinate tilt system from the calibration data.
 	float tiltBaseAngleY = g_Config.fTiltBaseAngleY;
 
@@ -1810,10 +1903,35 @@ void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
 	TiltEventProcessor::ProcessTilt(landscape, tiltBaseAngleY, tiltX, tiltY, tiltZ,
 		g_Config.bInvertTiltX, g_Config.bInvertTiltY,
 		xSensitivity, ySensitivity);
+}
+
+// TODO: Should include a device ID here, since accelerometers can be on pads for example (DualSense).
+void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
+	if (g_Config.iTiltInputType == TILT_NULL) {
+		// if tilt events are disabled, don't do anything special.
+		return;
+	}
+
+	TiltEventProcessor::ProcessAccelerometerForFusion(tiltX, tiltY, tiltZ);
+	// When there's a gyro, its events drive tilt instead.
+	if (!g_Config.bTiltUseGyro || !TiltEventProcessor::GyroActive()) {
+		ProcessTiltVector(tiltX, tiltY, tiltZ);
+	}
 
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_X] = tiltX;
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_Y] = tiltY;
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_Z] = tiltZ;
+}
+
+void NativeGyroscope(float x, float y, float z, double timestamp) {
+	if (g_Config.iTiltInputType == TILT_NULL) {
+		return;
+	}
+
+	Lin::Vec3 gravity;
+	if (TiltEventProcessor::ProcessGyro(x, y, z, timestamp, &gravity) && g_Config.bTiltUseGyro) {
+		ProcessTiltVector(gravity.x, gravity.y, gravity.z);
+	}
 }
 
 void System_PostUIMessage(UIMessage message, std::string_view param) {
@@ -1843,6 +1961,9 @@ void NativeShutdown() {
 	g_controlMapper.RemoveListener(&g_globalListener);
 
 	Achievements::Shutdown(false);  // CancelAll below drops the pending requests.
+
+	// A half-written image would be left behind otherwise.
+	GamePacker::Shutdown();
 
 	if (g_Config.bAchievementsEnable) {
 		FILE *iconCacheFile = File::OpenCFile(GetSysDirectory(DIRECTORY_CACHE) / "icon.cache", "wb");
@@ -1943,6 +2064,53 @@ static bool IsWindowSmall(int pixelWidth, int pixelHeight) {
 	int h = (int)(pixelHeight * g_display.dpi_scale_real_y);
 	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation());
 	return config.InternalRotationIsPortrait() ? (h < 480 + 80) : (w < 480 + 80);
+}
+
+int Native_AddOutput(OutputRole role, const Draw::SwapchainDesc &desc) {
+	OutputRequest request{};
+	request.type = OutputRequest::Type::ADD;
+	request.id = g_nextOutputId++;
+	request.role = role;
+	request.desc = desc;
+	std::lock_guard<std::mutex> guard(g_outputRequestLock);
+	g_outputRequests.push_back(request);
+	g_outputRequestsQueued++;
+	return request.id;
+}
+
+void Native_ResizeOutput(int id, int width, int height) {
+	OutputRequest request{};
+	request.type = OutputRequest::Type::RESIZE;
+	request.id = id;
+	request.width = width;
+	request.height = height;
+	std::lock_guard<std::mutex> guard(g_outputRequestLock);
+	g_outputRequests.push_back(request);
+	g_outputRequestsQueued++;
+}
+
+void Native_RemoveOutput(int id) {
+	OutputRequest request{};
+	request.type = OutputRequest::Type::REMOVE;
+	request.id = id;
+	std::lock_guard<std::mutex> guard(g_outputRequestLock);
+	g_outputRequests.push_back(request);
+	g_outputRequestsQueued++;
+}
+
+bool Native_RemoveOutputAndWait(int id) {
+	Native_RemoveOutput(id);
+	std::unique_lock<std::mutex> lock(g_outputRequestLock);
+	_dbg_assert_msg_(std::this_thread::get_id() != g_outputRequestThread, "Waiting for output requests on the thread that handles them");
+	const uint64_t queued = g_outputRequestsQueued;
+	// Without a device, the outputs have no swapchains to let go of.
+	const bool done = g_outputRequestsDoneCond.wait_for(lock, std::chrono::seconds(3), [=] {
+		return !g_outputsLive || g_outputRequestsDone >= queued;
+	});
+	if (!done) {
+		ERROR_LOG(Log::G3D, "Timed out waiting for output %d to be removed", id);
+	}
+	return done;
 }
 
 bool Native_UpdateScreenScale(int pixel_width, int pixel_height, float customScale) {

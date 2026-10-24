@@ -29,6 +29,7 @@
 // The choices (which mods are on, their order) are in PSP/MODS/mods.ini.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,10 @@ namespace Mods {
 
 // The disc id of the one game whose archive this knows.
 bool IsSupportedGameId(const std::string &discId);
+
+// DATA.BIN's directory, read through `raw` (bytes at an offset inside the archive as they are on the
+// disc). `bytes` is the archive's size. Nothing when it does not parse as this game's archive.
+std::optional<p3rd::Directory> ReadDirectory(const p3rd::ArchiveView::RawRead &raw, std::uint64_t bytes);
 
 class Manager {
 public:

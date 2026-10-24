@@ -38,9 +38,12 @@
 #include "Core/Util/RecentFiles.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/ELF/PBPReader.h"
+#include "Core/FileLoaders/PS1EbootFileLoader.h"
+#include "Core/MemMap.h"
 #include "Core/Util/VideoPlayer.h"
 
 #include "UI/GameBrowser.h"
+#include "UI/GamePacker.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/SavedataScreen.h"
 #include "UI/Store.h"
@@ -75,7 +78,8 @@ static float ListTextRightMargin(GameBrowserViewMode viewMode) {
 	return 0.0f;
 }
 
-static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style) {
+// In the list views, rightText (like a game ID) goes at the right edge, as for a game with a picture.
+static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style, std::string_view rightText = {}) {
 	const bool gridStyle = viewMode == GameBrowserViewMode::GRID;
 	float tw, th;
 	dc.MeasureText(dc.GetFontStyle(), gridStyle ? g_Config.fGameGridScale : 1.0, gridStyle ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
@@ -119,6 +123,14 @@ static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text
 
 		float tx = textX;
 		int availableWidth = bounds.w - textX - ListTextRightMargin(viewMode);
+		if (!rightText.empty()) {
+			float vw, vh;
+			dc.MeasureText(dc.GetFontStyle(), 0.7f, 0.7f, rightText, &vw, &vh, 0);
+			availableWidth -= vw + 20;
+			dc.SetFontScale(0.7f, 0.7f);
+			dc.DrawText(rightText, bounds.x + availableWidth + textX + 10, bounds.centerY(), style.fgColor, ALIGN_VCENTER);
+			dc.SetFontScale(1.0f, 1.0f);
+		}
 		float sineWidth = std::max(0.0f, (tw - availableWidth)) / 2.0f;
 		if (availableWidth < tw) {
 			tx -= (1.0f + sin(time_now_d() * 1.5f)) * sineWidth;
@@ -370,8 +382,9 @@ void GameButton::UpdateVideo(const std::shared_ptr<GameInfo> &ginfo, bool wantVi
 
 void GameButton::Draw(UIContext &dc) {
 	const bool largeList = viewMode_ == GameBrowserViewMode::LARGE_LIST;
-	// Like the XMB, only the selected game plays its video. The mouse can select one too, by hovering.
-	const bool wantVideo = largeList && (HasFocus() || hovering_) && pmf_player_available();
+	// Like the XMB, only the selected game plays its video. Only keyboard/gamepad focus selects, since with
+	// touch or the mouse, getting a video to play without launching the game was too fiddly.
+	const bool wantVideo = largeList && HasFocus() && pmf_player_available();
 
 	GameInfoFlags infoFlags = GameInfoFlags::PARAM_SFO | GameInfoFlags::ICON;
 	if (wantVideo) {
@@ -414,10 +427,14 @@ void GameButton::Draw(UIContext &dc) {
 	if (ginfo->Ready(GameInfoFlags::ICON)) {
 		if (ginfo->icon.texture && drawBackground) {
 			texture = ginfo->icon.texture;
+			// The type icon is only for when there's no picture, and would be drawn on top of it.
+			imageIcon = ImageID::invalid();
 		} else if (drawBackground) {
 			// No icon, but drawBackground is set. Let's show a plain icon depending on type.
 			if (ginfo->fileType == IdentifiedFileType::PSP_ISO || ginfo->fileType == IdentifiedFileType::PSP_ISO_NP) {
 				imageIcon = ImageID("I_UMD");
+			} else if (ginfo->fileType == IdentifiedFileType::PSX_ISO || ginfo->fileType == IdentifiedFileType::PSP_PS1_PBP) {
+				imageIcon = ImageID("I_PSX_ISO");
 			} else if (gamePath_.Type() == PathType::HTTP) {
 				imageIcon = ginfo->fileType == IdentifiedFileType::UNKNOWN ? ImageID("I_LINK_OUT_QUESTION") : ImageID("I_LINK_OUT");
 			} else {
@@ -544,7 +561,7 @@ void GameButton::Draw(UIContext &dc) {
 		if (down_) style = dc.GetTheme().itemDownStyle;
 		if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
-		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style);
+		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style, g_Config.bShowIDOnGameIcon ? std::string_view(ginfo->id_version) : std::string_view());
 
 		if (overlayColor) {
 			dc.FillRect(Drawable(overlayColor), overlayBounds);
@@ -659,6 +676,20 @@ void GameButton::Draw(UIContext &dc) {
 		dc.FillRect(Drawable(overlayColor), overlayBounds);
 	}
 
+	// Covers the icon while the game is being compressed. Clicking opens the game screen instead of playing.
+	GamePacker::Status packStatus;
+	if (GamePacker::IsPacking(gamePath_) && GamePacker::GetStatus(&packStatus)) {
+		auto ga = GetI18NCategory(I18NCat::GAME);
+		const Bounds iconBounds(x, y, w, h);
+		dc.FillRect(Drawable(0xD0505050), iconBounds);
+		const float scale = gridStyle_ || largeList ? 0.8f * g_Config.fGameGridScale : 0.6f;
+		dc.SetFontStyle(dc.GetTheme().uiFont);
+		dc.SetFontScale(scale, scale);
+		const std::string text = std::string(ga->T("Compressing...")) + StringFromFormat("\n%d%%", (int)(packStatus.progress * 100.0f));
+		dc.DrawTextRectSqueeze(text, iconBounds, 0xFFFFFFFF, ALIGN_CENTER);
+		dc.SetFontScale(1.0f, 1.0f);
+	}
+
 	dc.RebindTexture();
 }
 
@@ -714,7 +745,9 @@ void DirButton::Draw(UIContext &dc) {
 
 	std::string_view text(GetText());
 	ImageID image = ImageID(pinned_ ? "I_FOLDER_PINNED" : "I_FOLDER");
-	if (text == "..") {
+	if (path_.IsNetworkRoot()) {
+		image = ImageID("I_NETWORK");
+	} else if (text == "..") {
 		image = ImageID("I_UP_DIRECTORY");
 		text = "";
 	}
@@ -761,7 +794,7 @@ void GameBrowser::FocusGame(const Path &gamePath) {
 		}
 	}
 	// Otherwise, Refresh focuses it when it recreates the buttons.
-	focusGamePath_ = gamePath;
+	focusPath_ = gamePath;
 	refreshPending_ = true;
 }
 
@@ -772,6 +805,30 @@ void GameBrowser::SetPath(const Path &path) {
 }
 
 bool GameBrowser::Key(const KeyInput &input) {
+	// Alt+Up goes to the parent directory, as in file managers.
+	if ((input.flags & KeyInputFlags::DOWN) && (input.flags & KeyInputFlags::ModAlt) && input.keyCode == NKCODE_DPAD_UP && input.deviceId == DEVICE_ID_KEYBOARD) {
+		if ((browseFlags_ & BrowseFlags::NAVIGATE) && path_.CanNavigateUp()) {
+			NavigateUp();
+			return true;
+		}
+	}
+
+	// Backspace with no search going also goes to the parent directory, as in file managers. Never on
+	// a repeat, or holding it would climb to the root (or carry on up after clearing a search). Not
+	// every platform flags repeats, so this also tracks whether it's held.
+	if (input.keyCode == NKCODE_DEL && input.deviceId == DEVICE_ID_KEYBOARD) {
+		if (input.flags & KeyInputFlags::UP) {
+			backspaceHeld_ = false;
+		} else if (input.flags & KeyInputFlags::DOWN) {
+			const bool repeat = backspaceHeld_ || (input.flags & KeyInputFlags::IS_REPEAT);
+			backspaceHeld_ = true;
+			if (!repeat && search_.searchFilter.empty() && (browseFlags_ & BrowseFlags::NAVIGATE) && path_.CanNavigateUp()) {
+				NavigateUp();
+				return true;
+			}
+		}
+	}
+
 	bool retval = LinearLayout::Key(input);
 	if (retval) {
 		return true;
@@ -946,7 +1003,8 @@ static bool IsValidPBP(const Path &path, bool allowHomebrew) {
 	if (!allowHomebrew && sfo.GetValueString("DISC_ID").empty())
 		return false;
 
-	if (sfo.GetValueString("CATEGORY") == "ME")
+	// PS1 games, which need the Media Engine.
+	if (sfo.GetValueString("CATEGORY") == "ME" && !Memory::CanCreateMESpace())
 		return false;
 
 	return true;
@@ -975,7 +1033,7 @@ void GameBrowser::Refresh() {
 	// Recent isn't a real folder, so it gets no path or refresh.
 	const bool isRecent = path_.GetPath().ToString() == "!RECENT";
 
-	std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
+	std::string pathStr = path_.GetPath().IsNetworkRoot() ? std::string(mm->T("Network")) : GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
 
 	if (pathOnSeparateLine && !isRecent) {
 		Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
@@ -1072,12 +1130,18 @@ void GameBrowser::Refresh() {
 		}
 	} else if (!listingPending_) {
 		std::vector<File::FileInfo> fileInfo;
-		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
+		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:cue:ccd:mds:bin:img:");
+		// PS1 discs: a .bin or .img shows up as its cue sheet or .ccd, when it has one.
+		RemoveDescribedDiscImages(&fileInfo);
+		// Drives and servers aren't games, and probing a server that's gone away can take seconds.
+		const bool probeDirs = !path_.GetPath().IsRoot() && !path_.GetPath().IsNetworkRoot();
 		for (size_t i = 0; i < fileInfo.size(); i++) {
 			bool isGame = !fileInfo[i].isDirectory;
 			bool isSaveData = false;
 			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
-			if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
+			if (!probeDirs) {
+				// Just a directory.
+			} else if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
 				isGame = true;
 			else if (!isGame && File::Exists(path_.GetPath() / fileInfo[i].name / "PSP_GAME/SYSDIR"))
 				isGame = true;
@@ -1086,7 +1150,8 @@ void GameBrowser::Refresh() {
 
 			if (!isGame && !isSaveData) {
 				if (browseFlags_ & BrowseFlags::NAVIGATE) {
-					dirButtons.push_back(new DirButton(fileInfo[i].fullName, fileInfo[i].name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+					const std::string name = fileInfo[i].fullName.IsNetworkRoot() ? std::string(mm->T("Network")) : fileInfo[i].name;
+					dirButtons.push_back(new DirButton(fileInfo[i].fullName, name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 				}
 			} else {
 				gameButtons.push_back(new GameButton(fileInfo[i].fullName, lastViewMode_, new UI::LinearLayoutParams(gridStyle ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));
@@ -1111,10 +1176,11 @@ void GameBrowser::Refresh() {
 		}
 	}
 
+	DirButton *upButton = nullptr;
 	if (browseFlags_ & BrowseFlags::NAVIGATE) {
 		if (path_.CanNavigateUp()) {
-			gameList_->Add(new DirButton(Path(".."), lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)))->
-				OnClick.Handle(this, &GameBrowser::NavigateClick);
+			upButton = gameList_->Add(new DirButton(Path(".."), lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+			upButton->OnClick.Handle(this, &GameBrowser::NavigateClick);
 		}
 
 		// Add any pinned paths before other directories.
@@ -1132,6 +1198,9 @@ void GameBrowser::Refresh() {
 
 	for (size_t i = 0; i < dirButtons.size(); i++) {
 		gameList_->Add(dirButtons[i])->OnClick.Handle(this, &GameBrowser::NavigateClick);
+		if (!focusPath_.empty() && dirButtons[i]->GetPath() == focusPath_ && dirButtons[i]->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+			UI::ScrollFocusedViewIntoView();
+		}
 	}
 
 	for (size_t i = 0; i < gameButtons.size(); i++) {
@@ -1140,11 +1209,22 @@ void GameBrowser::Refresh() {
 		b->OnHoldClick.Handle(this, &GameBrowser::GameButtonHoldClick);
 		b->OnHighlight.Handle(this, &GameBrowser::GameButtonHighlight);
 
-		if (!focusGamePath_.empty() && b->GamePath() == focusGamePath_) {
-			b->SetFocus(FocusFlags::CAUSE_RESTORE);
+		if (!focusPath_.empty() && b->GamePath() == focusPath_ && b->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+			UI::ScrollFocusedViewIntoView();
 		}
 	}
-	focusGamePath_.clear();
+	// A listing that's still loading has no buttons to focus yet.
+	if (!listingPending_) {
+		if (focusFirstItem_) {
+			// The folder's own contents rather than "..", which only shows up first if it's empty.
+			UI::View *first = !dirButtons.empty() ? (UI::View *)dirButtons[0] : !gameButtons.empty() ? (UI::View *)gameButtons[0] : upButton;
+			if (first && first->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+				UI::ScrollFocusedViewIntoView();
+			}
+		}
+		focusFirstItem_ = false;
+		focusPath_.clear();
+	}
 
 	// Show a button to toggle pinning at the very end.
 	if ((browseFlags_ & BrowseFlags::PIN) && !path_.GetPath().empty()) {
@@ -1236,9 +1316,24 @@ void GameBrowser::NavigateClick(UI::EventParams &e) {
 	Path text = button->GetPath();
 	if (button->PathAbsolute()) {
 		path_.SetPath(text);
+	} else if (text.ToString() == "..") {
+		NavigateUp();
+		return;
 	} else {
 		path_.Navigate(text.ToString());
 	}
+	focusFirstItem_ = true;
+	PathChanged();
+}
+
+void GameBrowser::NavigateUp() {
+	// Focus the directory we came out of, in the parent's listing.
+	focusPath_ = path_.GetPath();
+	path_.Navigate("..");
+	PathChanged();
+}
+
+void GameBrowser::PathChanged() {
 	g_Config.currentDirectory = path_.GetPath();
 	// Clear the search filter. This allow for smooth directory navigation using search
 	// (although there's no good way of going up...)

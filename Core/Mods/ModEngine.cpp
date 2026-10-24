@@ -38,6 +38,22 @@ bool IsSupportedGameId(const std::string &discId) {
 	return discId == "NPJB40001";
 }
 
+std::optional<Directory> ReadDirectory(const ArchiveView::RawRead &raw, std::uint64_t bytes) {
+	// The directory is small: its first word says how many blocks it takes.
+	std::vector<std::uint8_t> head(p3rd::kBlock);
+	head.resize(raw(0u, head));
+	std::vector<std::uint8_t> first(head);
+	p3rd::decrypt(first, 0u, 0u);
+	const std::uint32_t blocks = first.size() >= 4u
+		? static_cast<std::uint32_t>(first[0] | first[1] << 8u | first[2] << 16u | first[3] << 24u)
+		: 0u;
+	if (blocks == 0u || blocks >= 512u)
+		return std::nullopt;
+	std::vector<std::uint8_t> encrypted(static_cast<size_t>(blocks) * p3rd::kBlock);
+	encrypted.resize(raw(0u, encrypted));
+	return Directory::parse(encrypted, bytes);
+}
+
 struct Manager::State {
 	mutable std::mutex lock;
 
@@ -198,19 +214,7 @@ bool Manager::AttachDisc(const void *owner, ArchiveView::RawRead raw, std::uint6
 	s.raw = std::move(raw);
 	s.bytes = bytes;
 
-	// The directory is small: its first word says how many blocks it takes.
-	std::vector<std::uint8_t> head(p3rd::kBlock);
-	head.resize(s.raw(0u, head));
-	std::vector<std::uint8_t> first(head);
-	p3rd::decrypt(first, 0u, 0u);
-	const std::uint32_t blocks = first.size() >= 4u
-		? static_cast<std::uint32_t>(first[0] | first[1] << 8u | first[2] << 16u | first[3] << 24u)
-		: 0u;
-	if (blocks > 0u && blocks < 512u) {
-		std::vector<std::uint8_t> encrypted(static_cast<size_t>(blocks) * p3rd::kBlock);
-		encrypted.resize(s.raw(0u, encrypted));
-		s.directory = Directory::parse(encrypted, s.bytes);
-	}
+	s.directory = ReadDirectory(s.raw, s.bytes);
 	if (!s.directory) {
 		ERROR_LOG(Log::System, "[mods] DATA.BIN's directory could not be read; mods are off");
 		return false;

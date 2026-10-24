@@ -71,6 +71,22 @@ endif()
 if(WIN32)
 	list(APPEND GPU_IMPLS ${GPU_D3D11})
 endif()
+if(APPLE AND NOT LIBRETRO)
+	set(GPU_METAL
+		Metal/DrawEngineMetal.h
+		Metal/DrawEngineMetal.mm
+		Metal/FramebufferManagerMetal.h
+		Metal/FramebufferManagerMetal.mm
+		Metal/GPU_Metal.h
+		Metal/GPU_Metal.mm
+		Metal/ShaderManagerMetal.h
+		Metal/ShaderManagerMetal.mm
+		Metal/TextureCacheMetal.h
+		Metal/TextureCacheMetal.mm
+	)
+	set_source_files_properties(Metal/DrawEngineMetal.mm Metal/FramebufferManagerMetal.mm Metal/GPU_Metal.mm Metal/ShaderManagerMetal.mm Metal/TextureCacheMetal.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	list(APPEND GPU_IMPLS ${GPU_METAL})
+endif()
 
 set(GPU_SOURCES
 	${GPUArch}
@@ -100,6 +116,10 @@ set(GPU_SOURCES
 	Common/DrawEngineCommon.h
 	Common/PlanarShadows.cpp
 	Common/PlanarShadows.h
+	Common/FillScreen.cpp
+	Common/FillScreen.h
+	Common/Overlay.cpp
+	Common/Overlay.h
 	Common/PresentationCommon.cpp
 	Common/PresentationCommon.h
 	Common/ReshadeEffect.cpp
