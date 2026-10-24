@@ -767,6 +767,17 @@ static const ConfigSetting graphicsSettings[] = {
 	ConfigSetting("PlanarShadowDirX", SETTING(g_Config, iPlanarShadowDirX), 45, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowDirZ", SETTING(g_Config, iPlanarShadowDirZ), 30, CfgFlag::PER_GAME),
 	ConfigSetting("PlanarShadowHideOriginal", SETTING(g_Config, bPlanarShadowHideOriginal), true, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxFXAA", SETTING(g_Config, bScreenFxFXAA), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxHDR", SETTING(g_Config, bScreenFxHDR), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxCAS", SETTING(g_Config, bScreenFxCAS), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxCASLevel", SETTING(g_Config, iScreenFxCASLevel), 50, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxDeband", SETTING(g_Config, bScreenFxDeband), false, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxDebandLevel", SETTING(g_Config, iScreenFxDebandLevel), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxBrightness", SETTING(g_Config, iScreenFxBrightness), 0, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxContrast", SETTING(g_Config, iScreenFxContrast), 0, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxGamma", SETTING(g_Config, iScreenFxGamma), 100, CfgFlag::PER_GAME),
+	ConfigSetting("ScreenFxSaturation", SETTING(g_Config, iScreenFxSaturation), 100, CfgFlag::PER_GAME),
+	ConfigSetting("FillScreen", SETTING(g_Config, bFillScreen), false, CfgFlag::PER_GAME),
 
 	ConfigSetting("VertexDecJit", SETTING(g_Config, bVertexDecoderJit), &DefaultCodeGen, CfgFlag::DONT_SAVE | CfgFlag::REPORT),
 

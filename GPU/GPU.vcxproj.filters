@@ -111,6 +111,9 @@
     <ClInclude Include="Common\PlanarShadows.h">
       <Filter>Common</Filter>
     </ClInclude>
+    <ClInclude Include="Common\FillScreen.h">
+      <Filter>Common</Filter>
+    </ClInclude>
     <ClInclude Include="Common\DepalettizeShaderCommon.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -366,6 +369,9 @@
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\PlanarShadows.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\FillScreen.cpp">
       <Filter>Common</Filter>
     </ClCompile>
     <ClCompile Include="Common\SplineCommon.cpp">
@@ -667,6 +673,15 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="..\assets\shaders\fxaa.fsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\assets\shaders\screenfx_cas.fsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\assets\shaders\screenfx_grade.fsh">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\assets\shaders\screenfx_hdr.fsh">
       <Filter>Shaders</Filter>
     </None>
     <None Include="..\assets\shaders\GaussianDownscale.fsh">

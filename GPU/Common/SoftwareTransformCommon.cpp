@@ -28,6 +28,7 @@
 #include "GPU/Math3D.h"
 #include "GPU/GPUDefinitions.h"
 #include "GPU/GPUStateSIMDUtil.h"
+#include "GPU/Common/FillScreen.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/Common/SoftwareTransformCommon.h"
@@ -138,6 +139,40 @@ static bool SpriteUPlaneShort(const TransformedVertex &a, const TransformedVerte
 	return !GESpriteUPlaneExact((int64_t)(left.x * 16.0f), top, (int64_t)(right.x * 16.0f), bottom, left.u / texW, right.u / texW);
 }
 
+// Fill screen: the game's 480x272 screen is spread over a display of another shape, which suits the widened 3D view
+// but would stretch the 2D interface. Its through-mode vertices are pulled in about the screen's centre to square
+// pixels again. A draw that covers the screen's width (a fade, a backdrop) belongs with the 3D view and stays spread.
+static void FitInterfaceVertices(TransformedVertex *verts, int count, int prim, float fitX, float fitY) {
+	const float centreX = 0.5f * 480.0f;
+	const float centreY = 0.5f * 272.0f;
+	auto fit = [&](TransformedVertex &v) {
+		v.x = centreX + (v.x - centreX) * fitX;
+		v.y = centreY + (v.y - centreY) * fitY;
+	};
+	if (prim == GE_PRIM_RECTANGLES) {
+		// A sprite is two vertices; each is judged on its own, as many are merged into one batch.
+		for (int i = 0; i + 1 < count; i += 2) {
+			if (fabsf(verts[i + 1].x - verts[i].x) >= FillScreen::kScreenWideDraw)
+				continue;
+			fit(verts[i]);
+			fit(verts[i + 1]);
+		}
+		return;
+	}
+	if (count <= 0)
+		return;
+	float left = verts[0].x;
+	float right = left;
+	for (int i = 1; i < count; i++) {
+		left = std::min(left, verts[i].x);
+		right = std::max(right, verts[i].x);
+	}
+	if (right - left >= FillScreen::kScreenWideDraw)
+		return;
+	for (int i = 0; i < count; i++)
+		fit(verts[i]);
+}
+
 SoftwareTransformAction RunSoftwareTransform(SoftwareTransformParams &params, int prim, u32 vertType, const DecVtxFormat &decVtxFormat, int numDecodedVerts, int vertsSize, int vertexCount, u16 *&inds, int indsSize, SoftwareTransformResult *result) {
 	// These primitive are not handled.
 	_dbg_assert_(prim != GE_PRIM_KEEP_PREVIOUS && prim != GE_PRIM_TRIANGLE_FAN && prim != GE_PRIM_TRIANGLE_STRIP && prim != GE_PRIM_LINE_STRIP);
@@ -186,6 +221,16 @@ SoftwareTransformAction RunSoftwareTransform(SoftwareTransformParams &params, in
 
 			// Ignore color1 and fog, never used in throughmode anyway.
 			// The w of uv is also never used (hardcoded to 1.0.)
+		}
+
+		// Fill screen: a movie tells the game to go back to the PSP's shape; the interface is kept in proportion.
+		if (gstate_c.textureIsVideo) {
+			FillScreen::NoteVideoDraw();
+		} else if (!gstate.isModeClear() && !gstate_c.textureIsFramebuffer) {
+			// (A texture that is a rendered picture, such as a blur or a quest background, belongs with the 3D view.)
+			float fitX, fitY;
+			if (FillScreen::GetInterfaceFit(&fitX, &fitY))
+				FitInterfaceVertices(transformed, numDecodedVerts, prim, fitX, fitY);
 		}
 
 		// Here's the best opportunity to try to detect rectangles used to clear the screen, and

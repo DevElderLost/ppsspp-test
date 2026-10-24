@@ -359,6 +359,20 @@ public:
 	int iPlanarShadowDirX;      // Hundredths of a world unit per unit of height, -200 - 200
 	int iPlanarShadowDirZ;      // Same, for the Z axis.
 	bool bPlanarShadowHideOriginal;  // Skip the game's own round blob shadows (Monster Hunter Portable 3rd signature).
+	// Screen effects (Graphics > Screen effects), ported from the tiny_computer compositor. They run as built-in
+	// post-processing passes after the selected post-processing shaders (see ScreenFx* in GPU/Common/PostShader.h).
+	bool bScreenFxFXAA;
+	bool bScreenFxHDR;           // HDR bloom / tone effect
+	bool bScreenFxCAS;           // Contrast adaptive sharpening
+	int iScreenFxCASLevel;       // 0 - 100
+	bool bScreenFxDeband;        // Dither against colour banding
+	int iScreenFxDebandLevel;    // 0 - 200 (percent of one 8-bit step)
+	int iScreenFxBrightness;     // -100 - 100, 0 = neutral
+	int iScreenFxContrast;       // 0 - 100, 0 = neutral
+	int iScreenFxGamma;          // 50 - 300 (hundredths), 100 = neutral
+	int iScreenFxSaturation;     // 0 - 200 (percent), 100 = neutral
+	// Fill screen (see GPU/Common/FillScreen.h): the picture covers the whole display without being stretched.
+	bool bFillScreen;
 	int iMultiSampleLevel;
 	int bHighQualityDepth;
 	bool bReplaceTextures;

@@ -16,6 +16,7 @@
 #include "GPU/GPUCommonHW.h"
 #include "GPU/Common/SplineCommon.h"
 #include "GPU/Common/DrawEngineCommon.h"
+#include "GPU/Common/FillScreen.h"
 #include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/VertexDecoderCommon.h"
@@ -819,6 +820,7 @@ void GPUCommonHW::PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) 
 	// Flush anything left over.
 	drawEngineCommon_->Flush();
 	ShadowEndFrame();
+	FillScreen::BeginFrame();
 
 	// after this, render pass is active.
 	framebufferManager_->PrepareCopyDisplayToOutput(config, curFramebufferDirty_);
@@ -1240,6 +1242,9 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	if (blueToAlpha) {
 		vfb->usageFlags |= FB_USAGE_BLUE_TO_ALPHA;
 	}
+
+	// Fill screen only fits the 2D interface drawn into a framebuffer the game has displayed.
+	FillScreen::SetTargetDisplayed(vfb && (vfb->usageFlags & FB_USAGE_DISPLAYED_FRAMEBUFFER) != 0);
 
 	if (changed) {
 		drawEngineCommon_->SubmitQueuedDepth();

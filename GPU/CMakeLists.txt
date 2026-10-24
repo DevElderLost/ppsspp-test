@@ -116,6 +116,8 @@ set(GPU_SOURCES
 	Common/DrawEngineCommon.h
 	Common/PlanarShadows.cpp
 	Common/PlanarShadows.h
+	Common/FillScreen.cpp
+	Common/FillScreen.h
 	Common/PresentationCommon.cpp
 	Common/PresentationCommon.h
 	Common/ReinterpretFramebuffer.cpp
