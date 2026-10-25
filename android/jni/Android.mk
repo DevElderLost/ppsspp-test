@@ -677,6 +677,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/CmdLine.cpp \
   $(SRC)/Core/Config.cpp \
   $(SRC)/Core/ModImport.cpp \
+  $(SRC)/Core/Mods/CodeMods.cpp \
   $(SRC)/Core/Mods/DataBin.cpp \
   $(SRC)/Core/Mods/DataBinDump.cpp \
   $(SRC)/Core/Mods/DataBinDumpDisc.cpp \

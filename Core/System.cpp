@@ -76,6 +76,8 @@
 #include "Core/Loaders.h"
 #include "Core/PSPLoaders.h"
 #include "Core/ELF/ParamSFO.h"
+#include "Core/ModImport.h"
+#include "Core/Mods/ModEngine.h"
 #include "Core/SaveState.h"
 #include "Core/Util/RecentFiles.h"
 #include "Common/ExceptionHandlerSetup.h"
@@ -684,12 +686,17 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 		g_CoreParameter.gpuCore = GPUCORE_SOFTWARE;
 	}
 
+	// Code mods go into the game's memory now: it is loaded and has not run yet. (Core/Mods)
+	Mods::Manager::Instance().StartGame(ModImport::GetModsFolder(), g_paramSFO.GetDiscID(), Memory::g_MemorySize);
+
 	InstallExceptionHandler(&Memory::HandleFault, g_Config.bLogNativeCrashStackTraces);
 
 	return true;
 }
 
 void CPU_Shutdown(bool success) {
+	Mods::Manager::Instance().StopGame();
+
 	// Held across the whole teardown, not just Memory::Shutdown() further down. Everything below
 	// frees state the debugger UIs read from other threads - kernel objects, the symbol map, the
 	// memory map - and this is the lock they take to be sure none of it goes away mid-read. See

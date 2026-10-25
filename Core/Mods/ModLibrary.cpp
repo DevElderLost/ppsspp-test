@@ -320,6 +320,8 @@ Resolution ModLibrary::Resolve() const {
 		const ModChoice c = Choice(mod.id);
 		if (!c.enabled || !mod.unusable.empty())
 			continue;
+		if (mod.code)
+			result.code.push_back(mod.id);
 		for (const FileChange &change : mod.changes) {
 			Touch &touch = touches[change.file];
 			if (change.kind == FileChange::Kind::Replace) {
@@ -563,6 +565,42 @@ public:
 		}
 	}
 
+	// A code mod: one file of the loader's format, the PSP version's in Files and the HD version's in FilesHD.
+	// There are no targets: what the mod changes is inside the file.
+	void CodeFile(const IniFile &ini, const std::string &section, const std::string &version) {
+		std::string files = ini.Get(section, "Files");
+		if (version == "BOTH") {
+			if (const std::string *hd = ini.Find(section, "FilesHD"))
+				files = *hd;
+		} else if (version != "HD") {
+			Unusable("Made for the PSP version" + std::string(version.empty() ? " (it gives no Version, which means PSP)" : "") +
+				": its code is not the HD version's.");
+			return;
+		}
+		const std::vector<std::string> names = SplitList(files);
+		if (names.size() != 1u) {
+			Unusable(names.empty() ? "Its mod.ini lists no file." : "A code mod is one file; its mod.ini lists " + std::to_string(names.size()) + ".");
+			return;
+		}
+		const std::optional<Path> source = FindFile(folder_, names[0]);
+		if (!source) {
+			Unusable("The file \"" + names[0] + "\" is missing from the folder.");
+			return;
+		}
+		std::vector<std::uint8_t> bytes;
+		if (!ReadBytes(*source, &bytes)) {
+			Unusable("The file \"" + names[0] + "\" cannot be read.");
+			return;
+		}
+		std::string why;
+		std::optional<CodeMod> parsed = ParseCodeMod(bytes, &why);
+		if (!parsed) {
+			Unusable(why);
+			return;
+		}
+		mod_.code = std::make_shared<const CodeMod>(std::move(*parsed));
+	}
+
 	void Unusable(std::string why) {
 		if (mod_.unusable.empty())
 			mod_.unusable = std::move(why);
@@ -635,6 +673,8 @@ std::optional<Mod> ModFolderFormat::Read(const Path &folder) const {
 	if (mod.name.empty())
 		mod.name = folder.GetFilename();
 	mod.author = ini->Get(kInfo, "Author");
+	if (mod.author.empty())
+		mod.author = ini->Get("Author", "Name");  // as the loader's own mods give it
 	std::string description = ini->Get(kInfo, "Description");
 	std::replace(description.begin(), description.end(), '\\', '\n');
 	mod.description = std::move(description);
@@ -657,7 +697,8 @@ std::optional<Mod> ModFolderFormat::Read(const Path &folder) const {
 		reader.FileChanges(*ini, kInfo, version, FileChange::Kind::Patch);
 	} else if (IEquals(type, "Code")) {
 		mod.type = "Code";
-		reader.Unusable("A code mod runs its own PSP code inside the game. That is not supported here yet.");
+		mod.notes.push_back("A code mod is put in the game's memory when the game starts: turning it on or off takes a restart.");
+		reader.CodeFile(*ini, kInfo, version);
 	} else if (IEquals(type, "Pack")) {
 		mod.type = "Pack";
 		mod.members = SplitList(ini->Get(kInfo, "ModList"));

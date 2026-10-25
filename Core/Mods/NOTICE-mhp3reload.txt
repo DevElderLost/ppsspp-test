@@ -1,0 +1,7 @@
+Core/Mods/CodeMods.* install the mod files of the mhp3reload mod loader for Monster Hunter Portable 3rd
+(Kurogami2134, GNU General Public License version 3, https://github.com/Kurogami2134/mhp3reload).
+
+They follow what the loader does with a mod file: the block types, where main blocks are loaded, the table of
+mod ids, and how a hook is written. They were written from the loader's format description (Readme.md, modfile.bt)
+and its source. No code of the loader is copied. PPSSPP is GPL version 2 or later, which allows combining with
+version 3.

@@ -104,12 +104,16 @@ void ModsScreen::CreateContentViews(UI::ViewGroup *parent) {
 		const Mods::Mod &mod = list[i];
 		const std::string id = mod.id;
 		LinearLayout *row = column->Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		CheckBox *check = row->Add(new CheckBox(&enabled_[i], mod.name, "", new LinearLayoutParams(1.0f)));
-		check->SetEnabled(mod.unusable.empty());
-		check->OnClick.Add([this, id, i](UI::EventParams &) {
-			Mods::Manager::Instance().SetEnabled(id, enabled_[i]);
-			Changed();
-		});
+		if (mod.unusable.empty()) {
+			CheckBox *check = row->Add(new CheckBox(&enabled_[i], mod.name, "", new LinearLayoutParams(1.0f)));
+			check->OnClick.Add([this, id, i](UI::EventParams &) {
+				Mods::Manager::Instance().SetEnabled(id, enabled_[i]);
+				Changed();
+			});
+		} else {
+			// A mod that cannot be turned on has no check box, but still shows its name.
+			row->Add(new TextView(mod.name, ALIGN_LEFT, false, new LinearLayoutParams(1.0f, UI::Margins(16, 8))));
+		}
 		row->Add(new Choice(sy->T("Up"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)))->OnClick.Add([this, id](UI::EventParams &) {
 			Mods::Manager::Instance().Move(id, +1);
 			Changed();

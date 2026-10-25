@@ -36,13 +36,14 @@ bool GuestMemoryMatches(std::uint32_t address, const std::uint8_t *expected, std
 	return true;
 }
 
-void GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size) {
+bool GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size) {
 	if (size == 0 || !Memory::IsValidRange(address, (u32)size))
-		return;
+		return false;
 	Memory::MemcpyUnchecked(address, data, (u32)size);
 	// Patched code must not run from a stale translation.
 	if (currentMIPS)
 		currentMIPS->InvalidateICacheRangeDeferred(address, (int)size);
+	return true;
 }
 
 }  // namespace Mods
