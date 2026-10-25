@@ -113,13 +113,20 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 	// that has flash0 mounted is worse - so while a game is running, this screen is read-only.
 	const bool gameRunning = PSP_IsInited();
 
+	ChoiceGroupList *groups = parent->Add(new ChoiceGroupList());
 	if (info_.hasVsh && !FirmwareVersionSupportsVSH(info_.version)) {
-		parent->Add(new NoticeView(NoticeLevel::WARN, sy->T("XMB unsupported"),
+		groups->Add(new NoticeView(NoticeLevel::WARN, sy->T("XMB unsupported"),
 			sy->T("XMBUnsupportedVersion", "Only firmware 6.61 can boot the XMB so far")));
 	}
 
-	ChoiceGroup *actions = parent->Add(new ChoiceGroup(""));
-	Choice *launch = actions->Add(new Choice(sy->T("Launch XMB"), ImageID("I_PLAY")));
+	ChoiceGroup *launchGroup = groups->Add(new ChoiceGroup(""));
+	Choice *launch = launchGroup->Add(new Choice(sy->T("Launch XMB"), ImageID("I_PLAY")));
+
+	ChoiceGroup *settings = groups->Add(new ChoiceGroup(""));
+	settings->Add(new CheckBox(&g_Config.bAutoUpgradeFirmware, sy->T("Install or upgrade firmware from game discs"),
+		sy->T("AutoUpgradeFirmwareDesc", "Most game discs carry a firmware updater. Install it when there's no firmware yet, or when the disc's is newer.")));
+
+	ChoiceGroup *actions = groups->Add(new ChoiceGroup(""));
 	launch->OnClick.Add([this](UI::EventParams &) {
 		LaunchVSH();
 	});
@@ -132,9 +139,6 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 		});
 		install->SetEnabled(!gameRunning);
 	}
-
-	actions->Add(new CheckBox(&g_Config.bAutoUpgradeFirmware, sy->T("Install or upgrade firmware from game discs"),
-		sy->T("AutoUpgradeFirmwareDesc", "Most game discs carry a firmware updater. Install it when there's no firmware yet, or when the disc's is newer.")));
 
 	if (info_.anythingInstalled) {
 		Choice *erase = actions->Add(new Choice(sy->T("Uninstall firmware"), ImageID("I_TRASHCAN")));
@@ -151,7 +155,7 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 	}
 
 	if (gameRunning) {
-		parent->Add(new NoticeView(NoticeLevel::INFO,
+		groups->Add(new NoticeView(NoticeLevel::INFO,
 			sy->T("FirmwareNeedsNoGame", "Stop the game to change the installed firmware"), ""));
 	}
 }

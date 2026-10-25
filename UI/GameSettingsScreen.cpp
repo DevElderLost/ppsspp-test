@@ -246,43 +246,43 @@ void GameSettingsScreen::CreateTabs() {
 	AddTab("GameSettingsGraphics", ms->T("Graphics"), ImageID("I_DISPLAY"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("Graphics"), "graphics", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		CreateGraphicsSettings(parent);
+		CreateGraphicsSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	AddTab("GameSettingsControls", ms->T("Controls"), ImageID("I_CONTROLLER"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("Controls"), "controls"));
-		CreateControlsSettings(parent);
+		CreateControlsSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	AddTab("GameSettingsAudio", ms->T("Audio"), ImageID("I_SPEAKER_MAX"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("Audio"), "audio"));
-		CreateAudioSettings(parent);
+		CreateAudioSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	AddTab("GameSettingsNetworking", ms->T("Networking"), ImageID("I_WIFI"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("Networking"), "network"));
-		CreateNetworkingSettings(parent);
+		CreateNetworkingSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	AddTab("GameSettingsTools", ms->T("Tools"), ImageID("I_TOOLS"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("Tools"), "tools"));
-		CreateToolsSettings(parent);
+		CreateToolsSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	AddTab("GameSettingsSystem", ms->T("System"), ImageID("I_PSP"), [this](UI::LinearLayout *parent) {
 		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 		parent->Add(new PaneTitleBar(gamePath_, ms->T("System"), "system"));
-		CreateSystemSettings(parent);
+		CreateSystemSettings(parent->Add(new ChoiceGroupList()));
 	});
 
 	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
 	if ((deviceType == DEVICE_TYPE_VR) || g_Config.bForceVR) {
 		AddTab("GameSettingsVR", ms->T("VR"), ImageID::invalid(), [this](UI::LinearLayout *parent) {
-			CreateVRSettings(parent);
+			CreateVRSettings(parent->Add(new ChoiceGroupList()));
 		});
 	}
 }
@@ -649,15 +649,17 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
+	ChoiceGroup *systemIntegrationSettings = audioSettings->Add(new ChoiceGroup(""));  // Don't need a title.
 #if PPSSPP_PLATFORM(IOS)
-	CheckBox *respectSilentMode = audioSettings->Add(new CheckBox(&g_Config.bAudioRespectSilentMode, a->T("Respect silent mode")));
+	CheckBox *respectSilentMode = systemIntegrationSettings->Add(new CheckBox(&g_Config.bAudioRespectSilentMode, a->T("Respect silent mode")));
 	respectSilentMode->OnClick.Add([=](EventParams &e) {
 		System_Notify(SystemNotification::AUDIO_MODE_CHANGED);
 	});
 	respectSilentMode->SetEnabledPtr(&g_Config.bEnableSound);
 #endif
-#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
-	CheckBox *mixWithOthers = audioSettings->Add(new CheckBox(&g_Config.bAudioMixWithOthers, a->T("Mix audio with other apps")));
+
+	CheckBox *mixWithOthers = systemIntegrationSettings->Add(new CheckBox(&g_Config.bAudioMixWithOthers, a->T("Mix audio with other apps")));
 	mixWithOthers->OnClick.Add([=](EventParams &e) {
 		System_Notify(SystemNotification::AUDIO_MODE_CHANGED);
 	});
@@ -703,7 +705,7 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 		g_BackgroundAudio.SFX().Play(UI::UISound::ACHIEVEMENT_UNLOCKED, achievementVolume);
 	});
 
-	ChoiceGroup *uiSoundSettings = audioSettings->Add(new ChoiceGroup(a->T("UI sound")));
+	ChoiceGroup *uiSoundSettings = audioSettings->Add(new ChoiceGroup(""));
 
 	uiSoundSettings->Add(new CheckBox(&g_Config.bUISound, a->T("UI sound")));
 	PopupSliderChoice *uiVolume = uiSoundSettings->Add(new PopupSliderChoice(&g_Config.iUIVolume, 0, VOLUMEHI_FULL, Config::GetDefaultValueInt(&g_Config.iUIVolume), a->T("UI volume"), screenManager()));
