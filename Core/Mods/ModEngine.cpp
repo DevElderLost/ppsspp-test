@@ -131,9 +131,9 @@ static void LogResolution(State &s, const Resolution &resolution, const Layout *
 		INFO_LOG(Log::System, "[mods] no mod changes the game's files");
 		return;
 	}
-	INFO_LOG(Log::System, "[mods] %d file(s) replaced, %d patched", (int)resolution.replacements.size(), (int)resolution.patches.size());
+	NOTICE_LOG(Log::System, "[mods] %d file(s) replaced, %d patched", (int)resolution.replacements.size(), (int)resolution.patches.size());
 	if (layout != nullptr && layout->moved(*s.directory)) {
-		INFO_LOG(Log::System, "[mods] DATA.BIN grows from %d to %d bytes", (int)s.directory->archive_bytes(), (int)layout->directory.archive_bytes());
+		NOTICE_LOG(Log::System, "[mods] DATA.BIN grows from %d to %d bytes", (int)s.directory->archive_bytes(), (int)layout->directory.archive_bytes());
 	}
 	for (const auto &entry : resolution.replacements) {
 		INFO_LOG(Log::System, "[mods]   %s <- %s (%s)", s.format.FileName(entry.first).c_str(), entry.second.path.ToVisualString().c_str(), ModNameLocked(s, entry.second.mod).c_str());
@@ -157,6 +157,10 @@ static void ActivateNow(State &s, const Resolution &resolution) {
 	s.pendingCode.store(false, std::memory_order_relaxed);
 	s.active = resolution;
 	LogResolution(s, resolution, s.layout.get());
+	if (!resolution.empty()) {
+		ShowNotice(NoticeKind::Success, "Mods: files replaced",
+			std::to_string(resolution.replacements.size()) + " replaced, " + std::to_string(resolution.patches.size()) + " patched");
+	}
 }
 
 static bool CanSwitch(State &s, const Resolution &next) {
@@ -198,7 +202,7 @@ static void NoteProblems(State &s, FileId file) {
 		return;
 	for (const std::string &problem : content->problems) {
 		const std::string line = s.format.FileName(file) + ": " + problem;
-		WARN_LOG(Log::System, "[mods] %s", line.c_str());
+		ERROR_LOG(Log::System, "[mods] %s", line.c_str());
 		s.problems.push_back(line);
 	}
 }
@@ -237,17 +241,30 @@ void Manager::StartGame(const Path &modsFolder, const std::string &discId, std::
 		} else {
 			const std::string line = "code mod: a write of " + std::to_string(write.bytes.size()) + " bytes at " +
 				ToHex(write.address) + " is outside the game's memory";
-			WARN_LOG(Log::System, "[mods] %s", line.c_str());
+			ERROR_LOG(Log::System, "[mods] %s", line.c_str());
 			s.problems.push_back(line);
 		}
 	}
 	for (const std::string &problem : plan.problems) {
-		WARN_LOG(Log::System, "[mods] code mod: %s", problem.c_str());
+		ERROR_LOG(Log::System, "[mods] code mod: %s", problem.c_str());
 		s.problems.push_back("code mod: " + problem);
 	}
 	for (const auto &loaded : plan.loaded)
-		INFO_LOG(Log::System, "[mods] code mod %s loaded at %s", loaded.first.c_str(), ToHex(loaded.second).c_str());
-	INFO_LOG(Log::System, "[mods] %d code mod(s) installed: %d writes, %d bytes of code", (int)inputs.size(), (int)written, (int)plan.loadedBytes);
+		NOTICE_LOG(Log::System, "[mods] code mod %s loaded at %s", loaded.first.c_str(), ToHex(loaded.second).c_str());
+	NOTICE_LOG(Log::System, "[mods] %d code mod(s) installed: %d writes, %d bytes of code", (int)inputs.size(), (int)written, (int)plan.loadedBytes);
+	// And on the screen, so that the player sees it without any log.
+	std::string names;
+	for (const p3rd::CodeInput &input : inputs) {
+		if (!names.empty())
+			names += ", ";
+		names += input.name;
+	}
+	const bool failed = written != plan.writes.size() || !plan.problems.empty();
+	if (failed) {
+		ShowNotice(NoticeKind::Error, "Mods: a code mod was not fully installed", names + ": " + (plan.problems.empty() ? std::string("some writes were outside the game's memory") : plan.problems.front()));
+	} else {
+		ShowNotice(NoticeKind::Success, "Mods: code installed", names + " (" + std::to_string(written) + " writes)");
+	}
 }
 
 void Manager::StopGame() {
