@@ -436,7 +436,7 @@ public:
 	virtual bool SubviewFocused(View *view) { return false; }
 	virtual bool CanMoveFocus(FocusMove dir) const { return true; }
 
-	virtual void SetRoundCorners(RoundCorners corners) { roundCorners_ = corners; }
+	virtual void SetRoundCorners(RoundCorners corners = RoundCorners::All) { roundCorners_ = corners; }
 	virtual RoundCorners GetRoundCorners() const { return roundCorners_; }
 
 	void SetPopupStyle(bool popupStyle) { popupStyle_ = popupStyle; }
@@ -565,6 +565,9 @@ public:
 
 	void FocusChanged(FocusFlags focusFlags) override;
 
+	// Outlines it, to point it out without the keyboard focus (which would turn on keyboard navigation).
+	void SetHighlighted(bool highlighted) { highlighted_ = highlighted; }
+
 	Event OnClick;
 
 protected:
@@ -572,13 +575,14 @@ protected:
 	// the event.
 	// Use it for checking/unchecking checkboxes, etc.
 	virtual void ClickInternal();
-	void DrawBG(UIContext &dc, const Style &style);
+	void DrawBG(UIContext &dc, const Style &style, float radius);
 
 	CallbackColorTween *bgColor_ = nullptr;
 	float bgColorLast_ = 0.0f;
 	int downCountDown_ = 0;
 	bool dragging_ = false;
 	bool down_ = false;
+	bool highlighted_ = false;
 };
 
 // TODO: Very similar to Choice, should probably merge them.

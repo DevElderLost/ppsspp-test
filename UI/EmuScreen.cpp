@@ -86,6 +86,7 @@ using namespace std::placeholders;
 #include "UI/MainScreen.h"
 #include "UI/Background.h"
 #include "UI/EmuScreen.h"
+#include "UI/ImposeHome.h"
 #include "UI/DevScreens.h"
 #include "UI/GameInfoCache.h"
 #include "UI/BaseScreens.h"
@@ -162,7 +163,7 @@ void EmuScreen::SetPSPAnalog(int iInternalScreenRotation, int stick, float x, fl
 }
 
 EmuScreen::EmuScreen(const Path &filename, const Path &mountIso, std::optional<bool> umdAutoboot)
-	: gamePath_(filename), mountIso_(mountIso), umdAutoboot_(umdAutoboot) {
+	: gamePath_(filename), mountIso_(mountIso), umdAutoboot_(umdAutoboot), imposeHome_(std::make_unique<ImposeHomeScreen>()) {
 	saveStateSlot_ = SaveState::GetCurrentSlot();
 	g_controlMapper.AddListener(this);
 
@@ -1194,6 +1195,10 @@ bool EmuScreen::key(const KeyInput &key) {
 bool EmuScreen::touch(const TouchInput &touch) {
 	System_Notify(SystemNotification::ACTIVITY);
 
+	if (imposeHome_->IsOpen() && imposeHome_->Touch(touch)) {
+		return true;
+	}
+
 	bool ignoreGamepad = false;
 
 	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
@@ -1377,6 +1382,7 @@ void EmuScreen::CreateViews() {
 void EmuScreen::deviceLost() {
 	// A boot in progress only creates the GPU from PSP_InitUpdate, which doesn't run while the device is lost.
 	UIScreen::deviceLost();
+	imposeHome_->DeviceLost();
 }
 
 void EmuScreen::deviceRestored(Draw::DrawContext *draw) {
@@ -1418,7 +1424,7 @@ void EmuScreen::OpenChat(bool focus) {
 int GetChatMessageCount();
 
 ViewLayoutMode EmuScreen::LayoutMode() const {
-	return ViewLayoutMode::ApplyInsets;
+	return TouchControlsLayoutMode();
 }
 
 void EmuScreen::update() {
@@ -1437,6 +1443,12 @@ void EmuScreen::update() {
 		launchedFromVSH_ = request.launchedFromVSH;
 		vshmainArgs_ = request.vshmainArgs;
 		RecreateViews();
+	}
+
+	// The HOME button's quit screen.
+	const bool gameRunning = PSP_IsInited() && !bootPending_ && coreState == CORE_RUNNING_CPU && !PSP_HasBootRequest();
+	if (imposeHome_->Update(gameRunning, IsOnTop()) == ImposeHomeScreen::Action::LEAVE_GAME) {
+		leaveGame();
 	}
 
 	using namespace UI;
@@ -1984,6 +1996,8 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 }
 
 bool EmuScreen::hasVisibleUI() {
+	if (imposeHome_->IsOpen())
+		return true;
 	// Regular but uncommon UI.
 	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE || saveStateSpinner_->GetVisibility() == UI::V_VISIBLE)
 		return true;
@@ -2020,12 +2034,22 @@ void EmuScreen::renderUI() {
 		root_->Draw(*ctx);
 	}
 
+	if (imposeHome_->IsOpen() && PSP_IsInited()) {
+		// Over the PSP screen, wherever the layout puts it.
+		const DisplayLayoutConfig &config = GameLayoutConfig();
+		FRect frame = GetScreenFrame(config.bIgnoreScreenInsets, g_display.pixel_xres, g_display.pixel_yres);
+		FRect rc;
+		CalculateDisplayOutputRect(config, &rc, 480.0f, 272.0f, frame, config.iInternalScreenRotation);
+		imposeHome_->Draw(*ctx, Bounds(rc.x * g_display.dpi_scale_x, rc.y * g_display.dpi_scale_y, rc.w * g_display.dpi_scale_x, rc.h * g_display.dpi_scale_y));
+	}
+
 	if (PSP_IsInited()) {
 		if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::CONTROL) {
-			DrawControlMapperOverlay(ctx, GetLayoutBounds(*ctx), g_controlMapper);
+			DrawControlMapperOverlay(ctx, ctx->GetLayoutBounds(ViewLayoutMode::ApplyInsets, UseImmersiveMode()), g_controlMapper);
 		}
 		if (g_Config.iShowStatusFlags) {
-			DrawFPS(ctx, GetLayoutBounds(*ctx));
+			// Top right, so it can't skip the side insets like the controls can.
+			DrawFPS(ctx, ctx->GetLayoutBounds(ViewLayoutMode::ApplyInsets, UseImmersiveMode()));
 		}
 	}
 
@@ -2100,7 +2124,7 @@ void EmuScreen::AutoLoadSaveState() {
 			if (status == SaveState::Status::FAILURE) {
 				autoLoadFailed_ = true;
 			} else {
-				std::string msg = std::string(sy->T("Auto Load Savestate")) + ": " + StringFromFormat("%d", autoSlot);
+				std::string msg = std::string(sy->T("Auto load savestate")) + ": " + StringFromFormat("%d", autoSlot);
 				g_OSD.Show(OSDType::MESSAGE_SUCCESS, msg, 2.0f, "autoload");
 			}
 		});

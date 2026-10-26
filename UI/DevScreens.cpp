@@ -78,7 +78,7 @@
 #include "UI/EmuScreen.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/ControlMappingScreen.h"
-#include "UI/DeveloperToolsScreen.h"
+#include "UI/GameSettingsScreen.h"
 #include "UI/JitCompareScreen.h"
 #include "android/jni/app-android.h"
 
@@ -173,7 +173,9 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 
 	items->Add(new Choice(sy->T("Developer Tools")))->OnClick.Add([this](UI::EventParams &e) {
 		UpdateUIState(UISTATE_PAUSEMENU);
-		screenManager()->push(new DeveloperToolsScreen(gamePath_));
+		GameSettingsScreen *settings = new GameSettingsScreen(gamePath_);
+		settings->OpenDeveloperTools();
+		screenManager()->push(settings);
 	});
 
 	// Debug overlay
@@ -638,7 +640,7 @@ void FrameDumpTestScreen::CreateTabs() {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 
-	AddTab("General", dev->T("Dumps"), [this](UI::LinearLayout *parent) {
+	AddTab("General", di->T("Dumps"), [this](UI::LinearLayout *parent) {
 		ChoiceGroup *dumps = parent->Add(new ChoiceGroupList())->Add(new ChoiceGroup("GE Frame Dumps"));
 
 		for (auto &file : files_) {

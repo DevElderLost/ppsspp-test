@@ -345,7 +345,7 @@ private:
 	const bool portrait_;
 };
 
-void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
+void MainScreen::CreateMainButtons(UI::LinearLayout *parent, bool portrait) {
 	using namespace UI;
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 	auto di = GetI18NCategory(I18NCat::DIALOG);
@@ -368,13 +368,14 @@ void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
 			gold->SetImageScale(0.6f);  // for the left icon.
 			gold->SetShine(true);
 		}
+		parent->ApplyRoundCorners();
 		return;
 	} else {
 		ChoiceGroupList *buttons = parent->Add(new ChoiceGroupList());
 		buttons->SetPadding(Margins(0));
 		buttons->SetSpacing(12.0f);
 
-		ChoiceGroup *mainButtons = buttons->Add(new ChoiceGroup(""));
+		ChoiceGroup *mainButtons = buttons->Add(new ChoiceGroup());
 
 		if (System_GetPropertyBool(SYSPROP_HAS_FILE_BROWSER)) {
 			mainButtons->Add(new Choice(mm->T("Load", "Load...")))->OnClick.Handle(this, &MainScreen::OnLoadFile);
@@ -1019,12 +1020,8 @@ void GridSettingsPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	items->SetSpacing(0.0f);
 
 	// Same order as GameBrowserViewMode.
-	static const char *viewModes[] = { "Grid", "List", "Large list" };
-	items->Add(new PopupMultiChoice(&g_Config.iGameBrowserView1, mm->T("Recent"), viewModes, 0, ARRAY_SIZE(viewModes), I18NCat::SYSTEM, screenManager()));
-	items->Add(new PopupMultiChoice(&g_Config.iGameBrowserView2, mm->T("Games"), viewModes, 0, ARRAY_SIZE(viewModes), I18NCat::SYSTEM, screenManager()));
-	items->Add(new PopupMultiChoice(&g_Config.iGameBrowserView3, mm->T("Homebrew & Demos"), viewModes, 0, ARRAY_SIZE(viewModes), I18NCat::SYSTEM, screenManager()));
 	static const char *defaultTabs[] = { "Recent", "Games", "Homebrew & Demos" };
-	PopupMultiChoice *beziersChoice = items->Add(new PopupMultiChoice(&g_Config.iDefaultTab, sy->T("Default tab"), defaultTabs, 0, ARRAY_SIZE(defaultTabs), I18NCat::MAINMENU, screenManager()));
+	items->Add(new PopupMultiChoice(&g_Config.iDefaultTab, sy->T("Default tab"), defaultTabs, 0, ARRAY_SIZE(defaultTabs), I18NCat::MAINMENU, screenManager()));
 
 	items->Add(new ItemHeader(sy->T("Icon size")));
 	items->Add(new Choice(sy->T("Increase size")))->OnClick.Handle(this, &GridSettingsPopupScreen::GridPlusClick);

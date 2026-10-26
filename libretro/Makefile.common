@@ -1,6 +1,6 @@
 HAVE_LIBRETRO_VFS ?= 1
 
-FFMPEGDIR		= $(CORE_DIR)/ffmpeg
+FFMPEGDIR		= $(CORE_DIR)/ext/ffmpeg
 LIBRETRODIR		= $(CORE_DIR)/libretro
 COREDIR			= $(CORE_DIR)/Core
 COMMONDIR		= $(CORE_DIR)/Common
@@ -30,7 +30,6 @@ INCFLAGS += \
 	-I$(ZSTDDIR) \
 	-I$(EXTDIR)/snappy \
 	-I$(FFMPEGDIR) \
-	$(FFMPEGINCFLAGS) \
 	-I$(EXTDIR)/cityhash \
 	-I$(EXTDIR)/armips \
 	-I$(EXTDIR)/armips/ext/filesystem/include \
@@ -1128,6 +1127,7 @@ SOURCES_C += $(LIBRETROCOMMONDIR)/compat/compat_posix_string.c \
              $(LIBRETROCOMMONDIR)/file/file_path_io.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream_transforms.c \
+			 $(LIBRETROCOMMONDIR)/string/rstrtod.c \
              $(LIBRETROCOMMONDIR)/string/stdstring.c \
              $(LIBRETROCOMMONDIR)/time/rtime.c \
              $(LIBRETROCOMMONDIR)/vfs/vfs_implementation.c

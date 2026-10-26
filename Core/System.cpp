@@ -316,14 +316,14 @@ static void ShowCompatWarnings(const Compatibility &compat) {
 	// UI changes are best done after PSP_InitStart.
 	if (compat.flags().RequireBufferedRendering && g_Config.bSkipBufferEffects && !g_Config.bSoftwareRendering) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game requires Rendering Mode to be set to Buffered."), 10.0f, "bufreq");
+		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game is not compatible with \"Skip buffer effects\""), 10.0f, "bufreq");
 	} else {
 		g_OSD.CancelById("bufreq");
 	}
 
 	if (compat.flags().RequireBlockTransfer && g_Config.iSkipGPUReadbackMode != (int)SkipGPUReadbackMode::NO_SKIP && !PSP_CoreParameter().compat.flags().ForceEnableGPUReadback) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BlockTransferRequired", "Warning: This game requires Skip GPU Readbacks be set to No."), 10.0f, "blockxfer");
+		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BlockTransferRequired", "Warning: This game requires Skip GPU Readbacks to be set to No."), 10.0f, "blockxfer");
 	} else {
 		g_OSD.CancelById("blockxfer");
 	}
@@ -456,12 +456,19 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 		break;
 	}
 	case IdentifiedFileType::PSP_ELF:
+	{
 		homebrew = true;
 		if (Memory::g_PSPModel != PSP_MODEL_FAT) {
 			INFO_LOG(Log::Loader, "ELF, using full PSP-2000 memory access");
 			Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
 		}
+		// The XMB is an ELF too, with no title of its own.
+		const std::string vshTitle = GetVSHTitle(fileLoader->GetPath());
+		if (!vshTitle.empty()) {
+			gameTitle = vshTitle;
+		}
 		break;
+	}
 	case IdentifiedFileType::PPSSPP_GE_DUMP:
 		// Try to grab the disc ID from the filename or GE dump.
 		if (DiscIDFromGEDumpPath(g_CoreParameter.fileToStart, fileLoader, &geDumpDiscID)) {

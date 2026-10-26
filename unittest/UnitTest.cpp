@@ -33,19 +33,26 @@
 // build/unittest EscapeMenuString
 
 #include "ppsspp_config.h"
-
 #include <typeinfo>
 
-#include <algorithm>
+// To avoid warnings, this should go first.
+#include "Common/Net/SocketCompat.h"
+
 #include <atomic>
+#include <cmath>
+#include <algorithm>
+#include <memory>
 #include <cstdio>
 #include <cstdlib>
-#include <cmath>
-#include <memory>
 #include <vector>
 #include <string>
 #include <sstream>
+
+#include <map>
 #include <unordered_map>
+#include <set>
+#include <list>
+
 
 #if PPSSPP_PLATFORM(ANDROID)
 #include <jni.h>
@@ -87,18 +94,16 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "Core/ConfigSettings.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/File/VFS/VFS.h"
-#include "Common/File/VFS/DirectoryReader.h"
 #include "Common/Math/fast/fast_matrix.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeMap.h"
 #include "Common/Serialize/SerializeSet.h"
 #include "Common/Serialize/SerializeList.h"
-#include <map>
-#include <set>
-#include <list>
+
 #include "Core/CmdLine.h"
 #include "Core/System.h"
 #include "Common/Data/Collections/Hashmaps.h"
@@ -134,7 +139,6 @@
 #include "Common/Render/AtlasGen.h"
 #include "Common/Render/Text/draw_text.h"
 #include "Common/Net/Resolve.h"
-#include "Common/Net/SocketCompat.h"
 
 #include "unittest/JitHarness.h"
 #include "unittest/TestVertexJit.h"
@@ -883,6 +887,33 @@ bool TestSerializer() {
 	return true;
 }
 
+bool TestLogFileOpen() {
+	// Creating the log file's folder logs, which used to deadlock on the log file lock.
+	const Path dir = UnitTestTempPath("unittest_log_file");
+	File::DeleteDirRecursively(dir);
+	const Path logPath = dir / "sub" / "log.txt";
+
+	const LogOutput outputs = g_logManager.GetOutputsEnabled();
+	const LogLevel ioLevel = g_logManager.GetLogLevel(Log::IO);
+	const bool ioEnabled = g_logManager.GetLogChannel(Log::IO)->enabled;
+	g_logManager.SetLogLevel(Log::IO, LogLevel::LVERBOSE);
+	g_logManager.SetEnabled(Log::IO, true);
+
+	g_logManager.SetFileLogPath(logPath);
+	g_logManager.EnableOutput(LogOutput::File);
+	INFO_LOG(Log::IO, "Log file test");
+	bool exists = File::Exists(logPath);
+
+	g_logManager.SetOutputsEnabled(outputs);
+	g_logManager.SetFileLogPath(Path());
+	g_logManager.SetLogLevel(Log::IO, ioLevel);
+	g_logManager.SetEnabled(Log::IO, ioEnabled);
+	File::DeleteDirRecursively(dir);
+
+	EXPECT_TRUE(exists);
+	return true;
+}
+
 bool TestMemBlockInfoSaveState() {
 	MemBlockInfoInit();
 	MemBlockOverrideDetailed();
@@ -917,6 +948,33 @@ bool TestMemBlockInfoSaveState() {
 	NotifyMemInfo(MemBlockFlags::ALLOC, 0x08800100, 0x10, "SplitTag", 8);
 	auto results = FindMemInfo(0x08800000, 0x20000);
 	EXPECT_TRUE(!results.empty());
+
+	MemBlockReleaseDetailed();
+	MemBlockInfoShutdown();
+	return true;
+}
+
+bool TestMemBlockInfoRangeWrap() {
+	MemBlockInfoInit();
+	MemBlockOverrideDetailed();
+
+	// Sizes come from the game. One that wraps around 32 bits used to leave a slab that ends
+	// before it starts, hidden from lookups, and later marks crashed on it.
+	NotifyMemInfo(MemBlockFlags::WRITE, 0x08800800, 0xFFFFF000, "Wrap", 4);
+	NotifyMemInfo(MemBlockFlags::WRITE, 0x3FFFF000, 0x2000, "PastEnd", 7);
+
+	auto findWrite = [](uint32_t addr, const char *tag) {
+		std::vector<MemBlockInfo> results = FindMemInfoByFlag(MemBlockFlags::WRITE, addr, 1);
+		return results.size() == 1 && results[0].tag == tag && results[0].start + results[0].size > results[0].start;
+	};
+	EXPECT_TRUE(findWrite(0x08800800, "Wrap"));
+	EXPECT_TRUE(findWrite(0x20000000, "Wrap"));
+	EXPECT_TRUE(findWrite(0x3FFFFFFF, "PastEnd"));
+
+	// Splitting the clamped slab again works too.
+	NotifyMemInfo(MemBlockFlags::WRITE, 0x08900000, 0x1000, "Inside", 6);
+	EXPECT_TRUE(findWrite(0x08900000, "Inside"));
+	EXPECT_TRUE(findWrite(0x08901000, "Wrap"));
 
 	MemBlockReleaseDetailed();
 	MemBlockInfoShutdown();
@@ -3217,6 +3275,30 @@ bool TestVolumeFunc() {
 	return true;
 }
 
+// The info setters have to work in constant expressions, since the config tables are constexpr.
+static constexpr const char *testChoices[] = { "Off", "On", "Auto" };
+static constexpr ConfigSetting testSliderSetting = ConfigSetting("TestSlider", ConfigSettingOffset<int>{ 0 }, 50, CfgFlag::DEFAULT)
+	.Label(I18NCat::AUDIO, "Test slider").Range(0, 100, 5).Units("%").ZeroLabel("Off").NegativeLabel("Disabled");
+static_assert(testSliderSetting.Info().HasRange() && !testSliderSetting.Info().HasChoices());
+static_assert(testSliderSetting.Info().zeroLabel && testSliderSetting.Info().negativeLabel);
+static constexpr ConfigSetting testChoiceSetting = ConfigSetting("TestChoice", ConfigSettingOffset<int>{ 0 }, 1, CfgFlag::DEFAULT)
+	.Label(I18NCat::AUDIO, "Test choice").Choices(testChoices, 1);
+static_assert(testChoiceSetting.Info().choiceCount == 3 && testChoiceSetting.Info().choiceMin == 1 && !testChoiceSetting.Info().HasRange());
+
+bool TestConfigSettings() {
+	g_Config.Init();
+
+	const ConfigSettingRef *ref = Config::FindSetting(&g_Config.iUIVolume);
+	EXPECT_TRUE(ref && ref->setting->IniKey() == "UIVolume");
+	EXPECT_EQ_INT(Config::GetDefaultValueInt(&g_Config.iUIVolume), 75);
+
+	// Blocks that reset as a whole, where the default can depend on which block it is.
+	EXPECT_EQ_FLOAT(Config::GetDefaultValueFloat(&g_Config.displayLayoutLandscape.fDisplayOffsetY), 0.5f);
+	EXPECT_EQ_FLOAT(Config::GetDefaultValueFloat(&g_Config.displayLayoutPortrait.fDisplayOffsetY), 0.25f);
+	EXPECT_EQ_INT(Config::GetDefaultValueInt(&g_Config.gestureControls[1].iSwipeUp), 0);
+	return true;
+}
+
 bool TestLinAlg() {
 	static const float m1[16] = {
 		1, 2, 3, 4,
@@ -4030,6 +4112,8 @@ TestItem availableTests[] = {
 	TEST_ITEM(Parsers),
 	TEST_ITEM(TruncateCpy),
 	TEST_ITEM(MemBlockInfoSaveState),
+	TEST_ITEM(MemBlockInfoRangeWrap),
+	TEST_ITEM(LogFileOpen),
 	TEST_ITEM(Serializer),
 	TEST_ITEM(BlockAllocator),
 	TEST_ITEM(SymbolMap),
@@ -4080,6 +4164,7 @@ TestItem availableTests[] = {
 	TEST_ITEM(SIMD),
 	TEST_ITEM(CrossSIMD),
 	TEST_ITEM(VolumeFunc),
+	TEST_ITEM(ConfigSettings),
 	TEST_ITEM(SplitSearch),
 	TEST_ITEM(FriendlyPath),
 	TEST_ITEM(LinAlg),

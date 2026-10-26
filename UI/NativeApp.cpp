@@ -143,7 +143,6 @@
 #include "UI/EmuScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GameSettingsScreen.h"
-#include "UI/DeveloperToolsScreen.h"
 #include "UI/GPUDriverTestScreen.h"
 #include "UI/MiscScreens.h"
 #include "UI/MemStickScreen.h"
@@ -441,6 +440,9 @@ void runImDebugger(Draw::DrawContext *draw) {
 	} else {
 		uiContext->SetOverrideScreenFrame(nullptr);
 		SetOverrideScreenFrame(nullptr);
+		if (imDebugger_) {
+			imDebugger_->OnHidden();
+		}
 	}
 
 	// Enable text input (needed for KeyInputFlags::CHAR events) only while an imgui text field is active.
@@ -757,9 +759,15 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 	cmdLineOptions.ApplyToConfig();
 	g_cmdLineOptions = cmdLineOptions;
 
+	// A debugger client drives the app from a script, and the logo only gets in its way.
+	if (cmdLineOptions.skipLogo.value_or(false) || cmdLineOptions.DebuggerPort().has_value()) {
+		skipLogo = true;
+	}
+
 	boot_filename.clear();
 	if (boot_filename.empty() && cmdLineOptions.bootVSH.value_or(false)) {
 		boot_filename = g_Config.nandRootDirectory / "flash0/vsh/module/vshmain.prx";
+		skipLogo = true;
 	}
 	boot_mountIso = cmdLineOptions.mountIso.has_value() ? Path(cmdLineOptions.mountIso.value()) : Path();
 
@@ -885,18 +893,24 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		if (equals(cmdLineOptions.startScreen.value(), "touchscreentest")) {
 			g_screenManager->switchScreen(new MainScreen());
 			g_screenManager->push(new TouchTestScreen(Path()));
-		}
-		if (equals(cmdLineOptions.startScreen.value(), "gamesettings")) {
+		} else if (equals(cmdLineOptions.startScreen.value(), "gamesettings")) {
 			g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::TO_GAME_SETTINGS));
 		} else if (equals(cmdLineOptions.startScreen.value(), "developertools")) {
 			g_screenManager->switchScreen(new MainScreen());
-			g_screenManager->push(new DeveloperToolsScreen(Path()));
+			GameSettingsScreen *settings = new GameSettingsScreen(Path());
+			settings->OpenDeveloperTools();
+			g_screenManager->push(settings);
+		} else {
+			WARN_LOG(Log::System, "Unknown start screen '%s'", cmdLineOptions.startScreen.value().c_str());
+			g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::DEFAULT));
 		}
 	} else if (skipLogo && !boot_filename.empty()) {
 		INFO_LOG(Log::System, "Launching EmuScreen with boot filename '%s'", boot_filename.c_str());
 		g_screenManager->switchScreen(new EmuScreen(boot_filename, boot_mountIso));
-	} else {
+	} else if (!skipLogo) {
 		g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::DEFAULT));
+	} else {
+		g_screenManager->switchScreen(new MainScreen());
 	}
 
 	g_screenManager->SetBackgroundOverlayScreens(new BackgroundScreen(), new OSDOverlayScreen());
@@ -946,7 +960,6 @@ void NativeClearAchievementsHostOverride() {
 	});
 }
 
-void CallbackPostRender(UIContext *dc, void *userdata);
 bool CreateGlobalPipelines();
 
 // TODO: Add faster special case for channels == 2.
@@ -998,7 +1011,6 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 	}
 
 	g_screenManager->setUIContext(uiContext);
-	g_screenManager->setPostRenderCallback(&CallbackPostRender, nullptr);
 	// Live before the queue is processed: a removal that comes in while the outputs' swapchains are being
 	// recreated has to wait for the next frame, as its surface may be gone once it returns.
 	SetOutputsLive(true);
@@ -1175,10 +1187,6 @@ void NativeShutdownGraphics(GraphicsContext *graphicsContext) {
 	}
 
 	INFO_LOG(Log::System, "NativeShutdownGraphics end");
-}
-
-void CallbackPostRender(UIContext *dc, void *userdata) {
-	ScreenshotNotifyEndOfFrame(dc->GetDrawContext());
 }
 
 static void SendMouseDeltaAxis();
@@ -1394,6 +1402,8 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 			runImDebugger(g_draw);
 		});
 		renderImDebugger(g_draw);
+		// Last, since the readback ends the backbuffer pass. Nothing can draw after it.
+		ScreenshotNotifyEndOfFrame(g_draw);
 		if (g_screenManager->getUIContext()->Text()) {
 			g_screenManager->getUIContext()->Text()->OncePerFrame();
 		}
@@ -1511,6 +1521,11 @@ bool HandleGlobalMessage(UIMessage message, const std::string &value) {
 		return true;
 	} else if (message == UIMessage::SAVE_FRAME_DUMP) {
 		SaveFrameDump();
+		return true;
+	} else if (message == UIMessage::SOFT_KEYBOARD_HIDDEN) {
+		if (imDebugger_) {
+			imDebugger_->OnSoftKeyboardHidden();
+		}
 		return true;
 	} else {
 		return false;

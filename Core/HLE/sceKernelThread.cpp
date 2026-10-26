@@ -280,6 +280,10 @@ public:
 		g_exitCallbackPending = false;
 		// The callback may have already powered down by calling sceKernelExitGame - that's fine,
 		// Core_Stop is idempotent. Either way, the host will see CORE_POWERDOWN and tear the game down.
+		// Quitting from the HOME screen goes back to the XMB instead, as on a PSP.
+		if (toVSH && coreState != CORE_POWERDOWN && __KernelRequestExitToVSH()) {
+			return;
+		}
 		Core_Stop();
 	}
 
@@ -288,14 +292,22 @@ public:
 	}
 
 	void DoState(PointerWrap &p) override {
-		auto s = p.Section("ActionAfterExitCallback", 1);
+		auto s = p.Section("ActionAfterExitCallback", 1, 2);
 		if (!s)
 			return;
+		if (s >= 2) {
+			Do(p, toVSH);
+		} else {
+			toVSH = false;
+		}
 		if (p.mode == p.MODE_READ) {
 			// The dispatch is still in flight in the loaded state (see __KernelThreadingDoState.)
 			g_exitCallbackPending = true;
 		}
 	}
+
+	// Set when the HOME button's quit screen asked for the exit: then it ends in the XMB.
+	bool toVSH = false;
 };
 
 u32 PSPThread::GetMissingErrorCode() {
@@ -587,7 +599,7 @@ PSPAction *__KernelCreateAction(int actionType) {
 
 void MipsCall::DoState(PointerWrap &p)
 {
-	auto s = p.Section("MipsCall", 1);
+	auto s = p.Section("MipsCall", 1, 2);
 	if (!s)
 		return;
 
@@ -612,11 +624,14 @@ void MipsCall::DoState(PointerWrap &p)
 	Do(p, savedId);
 	Do(p, reschedAfter);
 
-	int actionTypeID = 0;
+	// Action type 0 is a real type (ActionAfterMipsCall, the first one registered), so version 1 lost
+	// those actions. Version 2 marks "no action" with -1.
+	const int noAction = s >= 2 ? -1 : 0;
+	int actionTypeID = noAction;
 	if (doAfter != NULL)
 		actionTypeID = doAfter->actionTypeID;
 	Do(p, actionTypeID);
-	if (actionTypeID != 0)
+	if (actionTypeID != noAction)
 	{
 		if (p.mode == p.MODE_READ)
 			doAfter = __KernelCreateAction(actionTypeID);
@@ -4006,7 +4021,7 @@ int sceKernelRegisterExitCallback(SceUID cbId) {
 // be dispatched (none registered, registering thread dead, etc.) - the caller should then power down
 // immediately. While true is returned, __KernelIsExitCallbackPending() will report true until the
 // callback returns (via the chained ActionAfterExitCallback).
-bool __KernelInvokeRegisteredExitCallback() {
+bool __KernelInvokeRegisteredExitCallback(bool toVSH) {
 	if (g_exitCallbackPending) {
 		WARN_LOG(Log::sceKernel, "__KernelInvokeRegisteredExitCallback: already in progress");
 		return true;
@@ -4030,6 +4045,7 @@ bool __KernelInvokeRegisteredExitCallback() {
 	}
 
 	ActionAfterExitCallback *action = (ActionAfterExitCallback *)__KernelCreateAction(actionAfterExitCallback);
+	action->toVSH = toVSH;
 
 	// Exit callbacks on real PSP receive (arg1, arg2, common) where arg1/arg2 are zero for HOME-button exit.
 	const u32 args[] = { 0, 0, cb->nc.commonArgument };

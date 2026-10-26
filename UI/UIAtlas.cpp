@@ -124,6 +124,8 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_ARROW_RIGHT", true},
 	{"I_ARROW_UP", true},
 	{"I_ARROW_DOWN", true},
+	{"I_CHEVRON_LEFT", false},
+	{"I_CHEVRON_RIGHT", false},
 	{"I_SLIDERS", false},
 	{"I_THREE_DOTS", true},
 	{"I_INFO", false},
@@ -205,6 +207,7 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_ARCHIVE_RAR", false},
 	{"I_DOWNLOAD", false},
 	{"I_NETWORK", false},
+	{"I_LANGUAGE", false},
 };
 
 static std::string PNGNameFromID(std::string_view id) {
