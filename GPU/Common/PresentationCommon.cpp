@@ -735,7 +735,7 @@ void PresentationCommon::RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer 
 	const ReshadeProgram &program = *rt.program;
 	// With a scene snapshot (first effect of the chain) the effect works on the 3D scene alone, depth included; the
 	// last pass then puts back every pixel the HUD changed. Without one: a UI mask picture, or just the effect.
-	Draw::Framebuffer *scene = (!postShaderOutput_ && srcSceneFramebuffer_ && rt.composite[1]) ? srcSceneFramebuffer_ : nullptr;
+	Draw::Framebuffer *scene = (!postShaderOutput_ && srcFramebuffer_ && srcSceneFramebuffer_ && rt.composite[1]) ? srcSceneFramebuffer_ : nullptr;
 	const int compositeMode = scene ? 1 : (rt.composite[0] ? 0 : (rt.composite[2] ? 2 : -1));
 	Draw::Framebuffer *input = scene ? scene : postShaderOutput_;  // nullptr: the original source.
 	Draw::Framebuffer *backBuffer = input;
@@ -1045,6 +1045,7 @@ void PresentationCommon::DestroyDeviceObjects() {
 	DoRelease(vdata_);
 	DoRelease(srcTexture_);
 	DoRelease(srcFramebuffer_);
+	DoRelease(srcSceneFramebuffer_);
 
 	restorePostShader_ = usePostShader_;
 	DestroyPostShader();
@@ -1083,6 +1084,7 @@ Draw::ShaderModule *PresentationCommon::CompileShaderModule(ShaderStage stage, S
 void PresentationCommon::SourceBlank() {
 	DoRelease(srcTexture_);
 	DoRelease(srcFramebuffer_);
+	DoRelease(srcSceneFramebuffer_);
 
 	srcWidth_ = 0;
 	srcHeight_ = 0;
@@ -1095,6 +1097,9 @@ void PresentationCommon::SourceTexture(Draw::Texture *texture, int bufferWidth, 
 
 	DoRelease(srcTexture_);
 	DoRelease(srcFramebuffer_);
+	// The scene snapshot belongs to the framebuffer that was just dropped. Left behind, ReShade used it with a
+	// null srcFramebuffer_ as soon as a video or raw pixel frame was shown (game intros) and crashed.
+	DoRelease(srcSceneFramebuffer_);
 
 	srcTexture_ = texture;
 	srcWidth_ = bufferWidth;
@@ -1573,6 +1578,7 @@ void PresentationCommon::CopyToOutput(const DisplayLayoutConfig &config) {
 	}
 
 	DoRelease(srcFramebuffer_);
+	DoRelease(srcSceneFramebuffer_);
 	DoRelease(srcTexture_);
 
 	// Unbinds all textures and samplers too, needed since sometimes a MakePixelTexture is deleted etc.
