@@ -18,6 +18,8 @@ SDLJoystick *joystick = NULL;
 #include <cmath>
 #include <csignal>
 #include <thread>
+#include <mutex>
+#include <chrono>
 #include <locale>
 
 #include "ext/portable-file-dialogs/portable-file-dialogs.h"
@@ -27,6 +29,7 @@ SDLJoystick *joystick = NULL;
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
 #include "Common/System/Request.h"
+#include "Common/System/OSD.h"
 #include "Common/System/NativeApp.h"
 #include "Common/GPU/thin3d.h"
 #include "Common/Audio/AudioBackend.h"
@@ -800,6 +803,254 @@ static void LaunchXdgOpen(const std::string &path) {
 }
 #endif
 
+// Linux file dialogs (zenity, kdialog...), run on a worker thread.
+//
+// pfd's result() waits for the helper process, so calling it from the thread that handles requests froze
+// the whole app whenever the helper never showed a window or never quit (Import ReShade shaders, Import mod,
+// Load, ... inside a Wayland compositor / proot container). Now the render loop keeps running, a second
+// request closes the stuck dialog and opens a new one, and the helper gets a clean environment:
+// the AppImage's own library paths (LD_LIBRARY_PATH, GTK_PATH, PATH entries...) break the system's zenity,
+// and a GTK helper on X11 can end up hidden behind a fullscreen Wayland window (or the other way around), so
+// if it quits at once we try the other backend. Helper's stderr goes to $TMPDIR/ppsspp-dialog.log.
+#if PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
+namespace {
+
+struct FileDialogJob {
+	SystemRequestType type;
+	int requestId;
+	std::string title;
+	std::string initial;
+	BrowseFileType browseType;
+	std::string videoDriver;  // SDL's, read on the main thread
+};
+
+enum class DialogBackend {
+	INHERIT,
+	WAYLAND_FIRST,
+	X11,
+};
+
+std::mutex g_dialogRunMutex;            // one helper at a time
+std::atomic<int> g_dialogLatest{0};     // newest request id, older ones are abandoned
+std::atomic<bool> g_dialogActive{false};
+
+bool EnvKeyIs(const std::string &kv, const char *key) {
+	const size_t n = strlen(key);
+	return kv.size() > n && kv.compare(0, n, key) == 0 && kv[n] == '=';
+}
+
+bool EnvKeyStartsWith(const std::string &kv, const char *prefix) {
+	return kv.compare(0, strlen(prefix), prefix) == 0;
+}
+
+// Drops the entries of a ':' separated list that point inside the AppImage.
+std::string StripAppDirPaths(const std::string &list, const std::vector<std::string> &appDirs) {
+	std::string out;
+	size_t pos = 0;
+	while (pos <= list.size()) {
+		size_t end = list.find(':', pos);
+		if (end == std::string::npos)
+			end = list.size();
+		const std::string part = list.substr(pos, end - pos);
+		bool drop = part.find("/.mount_") != std::string::npos;
+		for (const std::string &dir : appDirs) {
+			if (!dir.empty() && part.compare(0, dir.size(), dir) == 0)
+				drop = true;
+		}
+		if (!part.empty() && !drop) {
+			if (!out.empty())
+				out += ':';
+			out += part;
+		}
+		pos = end + 1;
+	}
+	return out;
+}
+
+void SetEnvEntry(std::vector<std::string> &env, const char *key, const std::string &value) {
+	env.erase(std::remove_if(env.begin(), env.end(), [&](const std::string &kv) { return EnvKeyIs(kv, key); }), env.end());
+	env.push_back(std::string(key) + "=" + value);
+}
+
+std::string GetEnvEntry(const std::vector<std::string> &env, const char *key) {
+	for (const std::string &kv : env) {
+		if (EnvKeyIs(kv, key))
+			return kv.substr(strlen(key) + 1);
+	}
+	return std::string();
+}
+
+std::vector<std::string> BuildDialogEnv(DialogBackend backend) {
+	std::vector<std::string> appDirs;
+	for (const char *name : { "APPDIR", "SHARUN_DIR" }) {
+		if (const char *v = getenv(name))
+			appDirs.push_back(v);
+	}
+
+	static const char *const dropExact[] = {
+		"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX",
+		"GTK_IM_MODULE_FILE", "GDK_PIXBUF_MODULE_FILE", "GDK_PIXBUF_MODULEDIR", "GIO_MODULE_DIR",
+		"GIO_EXTRA_MODULES", "GSETTINGS_SCHEMA_DIR", "PYTHONHOME", "PYTHONPATH", "PERLLIB", "PERL5LIB",
+		"QT_PLUGIN_PATH", "QML2_IMPORT_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "APPDIR", "APPIMAGE", "ARGV0", "OWD",
+	};
+
+	std::vector<std::string> env;
+	for (char **e = environ; e && *e; ++e) {
+		const std::string kv = *e;
+		bool drop = EnvKeyStartsWith(kv, "SHARUN_") || EnvKeyStartsWith(kv, "APPIMAGE_");
+		for (const char *key : dropExact) {
+			if (EnvKeyIs(kv, key))
+				drop = true;
+		}
+		if (drop)
+			continue;
+		if (EnvKeyIs(kv, "PATH") || EnvKeyIs(kv, "XDG_DATA_DIRS") || EnvKeyIs(kv, "XDG_CONFIG_DIRS")) {
+			const size_t eq = kv.find('=');
+			env.push_back(kv.substr(0, eq + 1) + StripAppDirPaths(kv.substr(eq + 1), appDirs));
+			continue;
+		}
+		env.push_back(kv);
+	}
+	if (GetEnvEntry(env, "PATH").empty())
+		SetEnvEntry(env, "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+
+	switch (backend) {
+	case DialogBackend::WAYLAND_FIRST:
+		// GTK and Qt fall back to X11 when there is no Wayland compositor.
+		SetEnvEntry(env, "GDK_BACKEND", "wayland,x11");
+		SetEnvEntry(env, "QT_QPA_PLATFORM", "wayland;xcb");
+		break;
+	case DialogBackend::X11:
+		SetEnvEntry(env, "GDK_BACKEND", "x11");
+		SetEnvEntry(env, "QT_QPA_PLATFORM", "xcb");
+		break;
+	case DialogBackend::INHERIT:
+		break;
+	}
+
+	const char *tmp = getenv("TMPDIR");
+	SetEnvEntry(env, "PPSSPP_DIALOG_LOG", std::string(tmp && *tmp ? tmp : "/tmp") + "/ppsspp-dialog.log");
+	return env;
+}
+
+// Blocks until the helper quits. Only called from the worker thread.
+std::string RunDialogHelper(const FileDialogJob &job) {
+	std::vector<std::string> filters;
+	switch (job.type) {
+	case SystemRequestType::BROWSE_FOR_IMAGE:
+		InitializeFilters(filters, BrowseFileType::IMAGE);
+		{
+			std::vector<std::string> result = pfd::open_file(job.title, "", filters).result();
+			return result.empty() ? std::string() : result[0];
+		}
+	case SystemRequestType::BROWSE_FOR_FILE:
+		InitializeFilters(filters, job.browseType);
+		{
+			std::vector<std::string> result = pfd::open_file(job.title, job.initial, filters).result();
+			return result.empty() ? std::string() : result[0];
+		}
+	case SystemRequestType::BROWSE_FOR_FILE_SAVE:
+		InitializeFilters(filters, job.browseType);
+		return pfd::save_file(job.title, job.initial, filters).result();
+	case SystemRequestType::BROWSE_FOR_FOLDER:
+		return pfd::select_folder(job.title, job.initial).result();
+	default:
+		return std::string();
+	}
+}
+
+void FileDialogThread(FileDialogJob job) {
+	SetCurrentThreadName("FileDialog");
+	std::lock_guard<std::mutex> runGuard(g_dialogRunMutex);
+
+	auto superseded = [&]() { return g_dialogLatest.load() != job.requestId; };
+	if (superseded()) {
+		g_requestManager.PostSystemFailure(job.requestId);
+		return;
+	}
+
+	std::vector<DialogBackend> attempts;
+	if (job.videoDriver == "wayland")
+		attempts = { DialogBackend::WAYLAND_FIRST, DialogBackend::X11 };
+	else if (job.videoDriver == "x11")
+		attempts = { DialogBackend::INHERIT, DialogBackend::WAYLAND_FIRST };
+	else
+		attempts = { DialogBackend::INHERIT, DialogBackend::X11 };
+
+	std::string result;
+	bool missing = false;
+	bool failedFast = false;
+	for (size_t i = 0; i < attempts.size() && !superseded(); i++) {
+		const std::vector<std::string> env = BuildDialogEnv(attempts[i]);
+		std::vector<char *> envp;
+		for (const std::string &kv : env)
+			envp.push_back(const_cast<char *>(kv.c_str()));
+		envp.push_back(nullptr);
+		pfd::settings::set_child_env(envp.data());
+		if (i == 0)
+			pfd::settings::rescan();  // with the cleaned PATH, not the AppImage's
+		if (!pfd::settings::available()) {
+			pfd::settings::set_child_env(nullptr);
+			missing = true;
+			break;
+		}
+
+		const auto start = std::chrono::steady_clock::now();
+		g_dialogActive = true;
+		result = RunDialogHelper(job);
+		g_dialogActive = false;
+		pfd::settings::set_child_env(nullptr);
+
+		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+		if (!result.empty())
+			break;
+		// Nobody cancels a dialog within a second and a half: the helper failed to open its window.
+		failedFast = ms < 1500;
+		if (!failedFast)
+			break;
+		WARN_LOG(Log::System, "File dialog quit after %d ms without a result (attempt %d/%d), see ppsspp-dialog.log", (int)ms, (int)i + 1, (int)attempts.size());
+	}
+
+	if (superseded()) {
+		g_requestManager.PostSystemFailure(job.requestId);
+		return;
+	}
+	if (!result.empty()) {
+		g_requestManager.PostSystemSuccess(job.requestId, result);
+		return;
+	}
+	if (missing) {
+		g_OSD.Show(OSDType::MESSAGE_ERROR, "No file dialog program found. Install zenity (apt install zenity) or kdialog.", 8.0f);
+	} else if (failedFast) {
+		g_OSD.Show(OSDType::MESSAGE_ERROR, "The file dialog could not be opened. Details: ppsspp-dialog.log in the temp folder.", 8.0f);
+	}
+	g_requestManager.PostSystemFailure(job.requestId);
+}
+
+// Called on the main thread.
+void StartFileDialog(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3) {
+	FileDialogJob job;
+	job.type = type;
+	job.requestId = requestId;
+	job.title = param1;
+	job.initial = param2;
+	job.browseType = (type == SystemRequestType::BROWSE_FOR_FILE || type == SystemRequestType::BROWSE_FOR_FILE_SAVE) ? (BrowseFileType)param3 : BrowseFileType::ANY;
+	const char *driver = SDL_GetCurrentVideoDriver();
+	job.videoDriver = driver ? driver : "";
+
+	g_dialogLatest = requestId;
+	// A dialog that is still open (or hidden) is closed, tapping the button again opens a fresh one.
+	if (g_dialogActive.load()) {
+		const long pid = pfd::settings::last_child_pid();
+		if (pid > 1)
+			kill((pid_t)pid, SIGTERM);
+	}
+	std::thread(FileDialogThread, std::move(job)).detach();
+}
+
+}  // namespace
+#endif
+
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
 	switch (type) {
 	case SystemRequestType::RESTART_APP:
@@ -881,6 +1132,14 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		return true;
 	}
 #else
+#if PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
+	case SystemRequestType::BROWSE_FOR_IMAGE:
+	case SystemRequestType::BROWSE_FOR_FILE:
+	case SystemRequestType::BROWSE_FOR_FILE_SAVE:
+	case SystemRequestType::BROWSE_FOR_FOLDER:
+		StartFileDialog(type, requestId, param1, param2, param3);
+		return true;
+#else
 	case SystemRequestType::BROWSE_FOR_IMAGE:
 	{
 		// TODO: Add non-blocking support.
@@ -932,6 +1191,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		}
 		return true;
 	}
+#endif
 #endif
 	case SystemRequestType::APPLY_FULLSCREEN_STATE:
 	{

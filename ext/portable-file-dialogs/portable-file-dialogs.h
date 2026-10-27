@@ -45,6 +45,9 @@
 #include <sys/stat.h> // stat()
 #include <sys/wait.h> // waitpid()
 #include <pwd.h>      // getpwnam()
+#ifndef __APPLE__
+extern char **environ; // replaced in the helper process, see settings::set_child_env()
+#endif
 #endif
 
 #include <string>   // std::string
@@ -55,6 +58,7 @@
 #include <regex>    // std::regex
 #include <thread>   // std::mutex, std::this_thread
 #include <chrono>   // std::chrono
+#include <atomic>   // std::atomic
 
 // Versions of mingw64 g++ up to 9.3.0 do not have a complete IFileDialog
 #ifndef PFD_HAS_IFILEDIALOG
@@ -125,6 +129,15 @@ public:
 
     static void verbose(bool value);
     static void rescan();
+
+    // Unix only: environment given to the helper process (zenity, kdialog...) instead of the
+    // caller's own. nullptr (the default) keeps the inherited environment. The array must stay
+    // valid while a dialog is running.
+    static void set_child_env(char **envp);
+    static char **child_env();
+    // PID of the helper process started last (0 if none), so another thread can ask it to quit.
+    static long last_child_pid();
+    static void set_last_child_pid(long pid);
 
 protected:
     explicit settings(bool resync = false);
@@ -583,6 +596,23 @@ inline void settings::rescan()
     settings(/* resync = */ true);
 }
 
+inline char **&child_env_storage()
+{
+    static char **env = nullptr;
+    return env;
+}
+
+inline std::atomic<long> &child_pid_storage()
+{
+    static std::atomic<long> pid(0);
+    return pid;
+}
+
+inline void settings::set_child_env(char **envp) { child_env_storage() = envp; }
+inline char **settings::child_env() { return child_env_storage(); }
+inline long settings::last_child_pid() { return child_pid_storage().load(); }
+inline void settings::set_last_child_pid(long pid) { child_pid_storage().store(pid); }
+
 // Check whether a program is present using “which”.
 inline bool settings::check_program(std::string const &program)
 {
@@ -783,8 +813,21 @@ inline void internal::executor::start_process(std::vector<std::string> const &co
         dup2(in[0], STDIN_FILENO);
         dup2(out[1], STDOUT_FILENO);
 
-        // Ignore stderr so that it doesn’t pollute the console (e.g. GTK+ errors from zenity)
-        int fd = open("/dev/null", O_WRONLY);
+        // The caller may hand us a cleaned-up environment (no AppImage library paths...).
+        // Plain assignment of environ is safe here, unlike setenv() in a forked multithreaded process.
+#ifndef __APPLE__
+        if (char **envp = settings::child_env())
+            ::environ = envp;
+#endif
+
+        // Ignore stderr so that it doesn’t pollute the console (e.g. GTK+ errors from zenity),
+        // unless PPSSPP_DIALOG_LOG names a file to keep it in (so a dialog that never shows up
+        // can be diagnosed).
+        const char *err_path = std::getenv("PPSSPP_DIALOG_LOG");
+        int fd = err_path && *err_path ? open(err_path, O_WRONLY | O_CREAT | O_APPEND, 0644)
+                                       : open("/dev/null", O_WRONLY);
+        if (fd < 0)
+            fd = open("/dev/null", O_WRONLY);
         dup2(fd, STDERR_FILENO);
         close(fd);
 
@@ -798,6 +841,7 @@ inline void internal::executor::start_process(std::vector<std::string> const &co
     }
 
     close(in[1]);
+    settings::set_last_child_pid(m_pid);
     m_fd = out[0];
     auto flags = fcntl(m_fd, F_GETFL);
     fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
