@@ -714,6 +714,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/AVIDump.cpp \
 	       $(COREDIR)/Config.cpp \
 	       $(COREDIR)/ModImport.cpp \
+	       $(COREDIR)/Mods/CodeMods.cpp \
 	       $(COREDIR)/Mods/DataBin.cpp \
 	       $(COREDIR)/Mods/DataBinDump.cpp \
 	       $(COREDIR)/Mods/DataBinDumpDisc.cpp \

@@ -38,6 +38,7 @@ RenderPassType MergeRPTypes(RenderPassType a, RenderPassType b) {
 	}
 
 	_dbg_assert_((a & RenderPassType::MULTIVIEW) == (b & RenderPassType::MULTIVIEW));
+	_dbg_assert_((a & RenderPassType::FLOAT16) == (b & RenderPassType::FLOAT16));
 
 	// The rest we can just OR together to get the maximum feature set.
 	return (RenderPassType)((u32)a | (u32)b);
@@ -1140,6 +1141,59 @@ void VulkanQueueRunner::LogReadbackImage(const VKRStep &step) {
 	INFO_LOG(Log::G3D, "%s", StepToString(vulkan_, step).c_str());
 }
 
+// Fills mip levels 1.. of a mipmapped framebuffer color image from level 0, right after a render pass into it.
+// Every level of the image shares the layout tracked in fb->color.layout (COLOR_ATTACHMENT_OPTIMAL after the pass),
+// so all levels are put back into that layout here, and the usual transitions move them all to SHADER_READ_ONLY later.
+void VulkanQueueRunner::GenerateFramebufferMips(VkCommandBuffer cmd, VKRFramebuffer *fb) {
+	const int levels = fb->color.mipLevels;
+	VkImage image = fb->color.image;
+	const int layers = fb->numLayers;
+
+	auto barrier = [&](uint32_t baseLevel, uint32_t levelCount, VkImageLayout oldLayout, VkImageLayout newLayout,
+		VkAccessFlags srcAccess, VkAccessFlags dstAccess, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage) {
+		VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		b.image = image;
+		b.oldLayout = oldLayout;
+		b.newLayout = newLayout;
+		b.srcAccessMask = srcAccess;
+		b.dstAccessMask = dstAccess;
+		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseLevel, levelCount, 0, (uint32_t)layers };
+		vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+	};
+	const VkPipelineStageFlags attachStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	const VkPipelineStageFlags transferStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+	barrier(0, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, attachStage, transferStage);
+	int32_t w = fb->width, h = fb->height;
+	for (int i = 1; i < levels; i++) {
+		// The old contents of the level don't matter, it's overwritten.
+		barrier(i, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, transferStage);
+		const int32_t nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
+		VkImageBlit blit{};
+		blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)(i - 1), 0, (uint32_t)layers };
+		blit.srcOffsets[1] = { w, h, 1 };
+		blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)i, 0, (uint32_t)layers };
+		blit.dstOffsets[1] = { nw, nh, 1 };
+		vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+		if (i + 1 < levels) {
+			barrier(i, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, transferStage, transferStage);
+		}
+		w = nw;
+		h = nh;
+	}
+	// Back to the layout the rest of the code believes the image is in.
+	const VkAccessFlags attachAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+	barrier(0, levels - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_ACCESS_TRANSFER_READ_BIT, attachAccess, transferStage, attachStage);
+	barrier(levels - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_ACCESS_TRANSFER_WRITE_BIT, attachAccess, transferStage, attachStage);
+}
+
 void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer cmd, const int curFrame, QueueProfileContext &profile) {
 	for (size_t i = 0; i < step.preTransitions.size(); i++) {
 		const TransitionRequest &iter = step.preTransitions[i];
@@ -1182,7 +1236,7 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 			recordBarrier_.TransitionImage(
 				step.render.framebuffer->color.image,
 				0,
-				1,
+				step.render.framebuffer->color.mipLevels,
 				step.render.framebuffer->numLayers,
 				VK_IMAGE_ASPECT_COLOR_BIT,
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1444,6 +1498,10 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 
 	_dbg_assert_(recordBarrier_.empty());
 
+	if (fb && fb->color.mipLevels > 1) {
+		GenerateFramebufferMips(cmd, fb);
+	}
+
 	if (fb) {
 		// If the desired final layout aren't the optimal layout needed next, early-transition the image.
 		if (step.render.finalColorLayout != fb->color.layout) {
@@ -1496,7 +1554,7 @@ VKRRenderPass *VulkanQueueRunner::PerformBindFramebufferAsRenderTarget(const VKR
 			vulkan_->GetPhysicalDeviceProperties().properties.driverVersion == 0xaa9c4b29;
 		if (maliBugWorkaround) {
 			// A little suboptimal but let's go for maximum safety here.
-			recordBarrier_.TransitionImage(fb->color.image, 0, 1, fb->numLayers, VK_IMAGE_ASPECT_COLOR_BIT,
+			recordBarrier_.TransitionImage(fb->color.image, 0, fb->color.mipLevels, fb->numLayers, VK_IMAGE_ASPECT_COLOR_BIT,
 				fb->color.layout, VK_IMAGE_LAYOUT_GENERAL,
 				VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 				VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,

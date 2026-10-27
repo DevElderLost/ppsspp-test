@@ -247,7 +247,7 @@ void VulkanBarrierBatch::TransitionDepthStencilImageAuto(
 }
 
 void VulkanBarrierBatch::TransitionColorImageAuto(VKRImage *image, VkImageLayout newImageLayout) {
-	TransitionColorImageAuto(image->image, &image->layout, newImageLayout, 0, 1, image->numLayers);
+	TransitionColorImageAuto(image->image, &image->layout, newImageLayout, 0, image->mipLevels, image->numLayers);
 }
 
 void VulkanBarrierBatch::TransitionDepthStencilImageAuto(VKRImage *image, VkImageLayout newImageLayout) {

@@ -280,6 +280,7 @@ private:
 
 	VKRRenderPass *PerformBindFramebufferAsRenderTarget(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformRenderPass(const VKRStep &pass, VkCommandBuffer cmd, int curFrame, QueueProfileContext &profile);
+	void GenerateFramebufferMips(VkCommandBuffer cmd, VKRFramebuffer *fb);
 	void PerformCopy(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformBlit(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformReadback(const VKRStep &pass, VkCommandBuffer cmd, FrameData &frameData);

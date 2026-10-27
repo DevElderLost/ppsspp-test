@@ -282,6 +282,8 @@ add_library(Core STATIC
 	Config.h
 	ModImport.cpp
 	ModImport.h
+	Mods/CodeMods.cpp
+	Mods/CodeMods.h
 	Mods/DataBin.cpp
 	Mods/DataBin.h
 	Mods/DataBinDump.cpp

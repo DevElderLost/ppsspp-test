@@ -59,6 +59,11 @@ struct ShaderInfo {
 	};
 	Setting settings[4];
 
+	// ReShade FX shader (.fx). The shader is compiled when the chain is built (see ReshadeEffect.h) and is ONE entry of
+	// the chain; PresentationCommon runs all its passes. reshadeProgram is filled in there.
+	Path reshadeFile;
+	int reshadeProgram = -1;  // runtime only
+
 	// TODO: Add support for all kinds of fun options like mapping the depth buffer,
 	// SRGB texture reads, etc.  prev shader?
 
@@ -112,6 +117,17 @@ struct TextureShaderInfo {
 };
 
 void ReloadAllPostShaderInfo(Draw::DrawContext *draw);
+
+// ReShade FX shaders live in <internal data>/reshade/Shaders (.fx, .fxh) and .../Textures (images that `source`
+// annotations point at), the same layout ReShade uses. Everything with an .fx extension in Shaders shows up in the
+// post-processing shader list as "<name> (ReShade)".
+// True when one of the selected post-processing shaders is a ReShade effect.
+bool ReshadeInChain();
+Path GetReshadeShadersDir();
+Path GetReshadeTexturesDir();
+// Imports a .fx / .fxh file, a texture image, or a zip with a shader pack (Shaders/ and Textures/ folders, or loose
+// files). Returns false with a message when nothing usable was found.
+bool ImportReshadeFiles(const Path &source, std::string *message);
 
 // Built-in screen effects (Graphics > Screen effects): FXAA -> colour grade -> CAS -> HDR / deband, in the same order
 // as the tiny_computer compositor. They are appended to the user's post-processing chain (before a shader that uses the

@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "Common/File/Path.h"
+#include "Core/Mods/CodeMods.h"
 
 namespace Mods {
 
@@ -95,6 +96,7 @@ struct Mod {
 	std::vector<std::string> members;  // a pack: the mods it turns on and off
 	std::vector<std::string> depends;  // mods it needs, turned on with it
 	std::vector<std::string> notes;    // parts that do nothing here, and why
+	std::shared_ptr<const p3rd::CodeMod> code;  // a code mod: what it writes to the game's memory at start
 	std::string unusable;              // why it cannot be turned on; empty when it can
 };
 
@@ -131,8 +133,13 @@ struct Resolution {
 	std::map<FileId, Source> replacements;          // the winning replacement per file
 	std::map<FileId, std::vector<Source>> patches;  // applied in this order: the last wins
 	std::vector<Conflict> conflicts;
+	// Code mods that are on, in the order they are installed (the lowest priority first, so that the highest
+	// one's writes come last and win).
+	std::vector<std::string> code;
 
 	bool empty() const { return replacements.empty() && patches.empty(); }
+	// The same code mods in the same order.
+	bool SameCode(const Resolution &other) const { return code == other.code; }
 	// Same files from the same sources; conflicts are not compared.
 	bool SameFiles(const Resolution &other) const {
 		return replacements == other.replacements && patches == other.patches;

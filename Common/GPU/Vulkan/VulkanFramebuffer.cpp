@@ -12,6 +12,15 @@ static const char * const rpTypeDebugNames[] = {
 	"MS_MV_RENDER",
 	"MS_MV_RENDER_DEPTH",
 	"BACKBUF",
+	"N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+	"F16_RENDER",
+	"F16_RENDER_DEPTH",
+	"F16_MV_RENDER",
+	"F16_MV_RENDER_DEPTH",
+	"F16_MS_RENDER",
+	"F16_MS_RENDER_DEPTH",
+	"F16_MS_MV_RENDER",
+	"F16_MS_MV_RENDER_DEPTH",
 };
 
 const char *GetRPTypeName(RenderPassType rpType) {
@@ -56,12 +65,12 @@ void VKRImage::Delete(VulkanContext *vulkan) {
 	}
 }
 
-VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag)
+VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag, VkFormat colorFormat, int colorMipLevels)
 	: vulkan_(vk), width(_width), height(_height), numLayers(_numLayers) {
 
 	_dbg_assert_(tag);
 
-	CreateImage(vulkan_, barriers, color, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
+	CreateImage(vulkan_, barriers, color, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag, colorMipLevels);
 	if (createDepthStencilBuffer) {
 		CreateImage(vulkan_, barriers, depth, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
 	}
@@ -70,7 +79,7 @@ VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, 
 		sampleCount = MultiSampleLevelToFlagBits(_multiSampleLevel);
 
 		// TODO: Create a different tag for these?
-		CreateImage(vulkan_, barriers, msaaColor, width, height, numLayers, sampleCount, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
+		CreateImage(vulkan_, barriers, msaaColor, width, height, numLayers, sampleCount, colorFormat, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
 		if (createDepthStencilBuffer) {
 			CreateImage(vulkan_, barriers, msaaDepth, width, height, numLayers, sampleCount, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
 		}
@@ -162,13 +171,13 @@ VKRFramebuffer::~VKRFramebuffer() {
 
 // NOTE: If numLayers > 1, it will create an array texture, rather than a normal 2D texture.
 // This requires a different sampling path!
-void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag) {
+void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag, int mipLevels) {
 	// We don't support more exotic layer setups for now. Mono or stereo.
 	_dbg_assert_(numLayers == 1 || numLayers == 2);
 	_dbg_assert_(format != VK_FORMAT_UNDEFINED);
 	VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	ici.arrayLayers = numLayers;
-	ici.mipLevels = 1;
+	ici.mipLevels = mipLevels;
 	ici.extent.width = width;
 	ici.extent.height = height;
 	ici.extent.depth = 1;
@@ -217,6 +226,7 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barr
 	}
 
 	ivci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;  // layered for consistency, even if single image.
+	ivci.subresourceRange.levelCount = mipLevels;  // Texturing sees all the mip levels, rendering only the first.
 	res = vkCreateImageView(vulkan->GetDevice(), &ivci, nullptr, &img.texAllLayersView);
 	_dbg_assert_(res == VK_SUCCESS);
 	vulkan->SetDebugName(img.texAllLayersView, VK_OBJECT_TYPE_IMAGE_VIEW, tag);
@@ -258,6 +268,7 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barr
 
 	VkImageMemoryBarrier *barrier = barriers->Add(img.image, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dstStage, 0);
 	barrier->subresourceRange.layerCount = numLayers;
+	barrier->subresourceRange.levelCount = mipLevels;
 	barrier->subresourceRange.aspectMask = aspects;
 	barrier->oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	barrier->newLayout = initialLayout;
@@ -266,6 +277,7 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barr
 
 	img.layout = initialLayout;
 	img.format = format;
+	img.mipLevels = mipLevels;
 	img.sampleCount = sampleCount;
 	img.tag = tag ? tag : "N/A";
 	img.numLayers = numLayers;
@@ -317,7 +329,8 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 
 	int attachmentCount = 0;
 	VkAttachmentDescription attachments[4]{};
-	attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : VK_FORMAT_R8G8B8A8_UNORM;
+	const VkFormat colorFormat = RenderPassTypeIsFloat16(rpType) ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+	attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : colorFormat;
 	attachments[attachmentCount].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[attachmentCount].loadOp = multisample ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : ConvertLoadAction(key.colorLoadAction);
 	attachments[attachmentCount].storeOp = ConvertStoreAction(key.colorStoreAction);
@@ -341,7 +354,7 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 
 	if (multisample) {
 		colorAttachmentIndex = attachmentCount;
-		attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : VK_FORMAT_R8G8B8A8_UNORM;
+		attachments[attachmentCount].format = isBackbuffer ? vulkan->GetSwapchainFormat() : colorFormat;
 		attachments[attachmentCount].samples = sampleCount;
 		attachments[attachmentCount].loadOp = ConvertLoadAction(key.colorLoadAction);
 		attachments[attachmentCount].storeOp = ConvertStoreAction(key.colorStoreAction);

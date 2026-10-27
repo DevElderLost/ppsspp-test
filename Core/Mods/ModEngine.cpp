@@ -20,6 +20,7 @@
 // The MIT notice is in Core/Mods/LICENSE-Yakumo.txt.
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -75,6 +76,11 @@ struct Manager::State {
 	bool serving = false;
 	bool restartPending = false;
 	bool switchedLive = false;
+
+	// Code mods: installed once, when the game starts.
+	bool gameStarted = false;
+	std::vector<std::string> appliedCode;  // the ids that were installed, in order
+	bool codeRestartPending = false;
 	std::optional<Resolution> waiting;  // a switch waiting for a file's load to end
 	std::optional<FileId> partial;      // a file the game has begun but not finished reading
 	std::set<FileId> loadedCode;        // overlays read in full with memory writes due
@@ -95,6 +101,12 @@ Manager &Manager::Instance() {
 // ---- Helpers on the locked state ---------------------------------------------------------------
 
 typedef Manager::State State;
+
+static std::string ToHex(std::uint32_t value) {
+	char text[16];
+	snprintf(text, sizeof(text), "0x%08X", value);
+	return text;
+}
 
 static std::string ModNameLocked(State &s, const std::string &id) {
 	if (const Mod *mod = s.library->Find(id))
@@ -119,9 +131,9 @@ static void LogResolution(State &s, const Resolution &resolution, const Layout *
 		INFO_LOG(Log::System, "[mods] no mod changes the game's files");
 		return;
 	}
-	INFO_LOG(Log::System, "[mods] %d file(s) replaced, %d patched", (int)resolution.replacements.size(), (int)resolution.patches.size());
+	NOTICE_LOG(Log::System, "[mods] %d file(s) replaced, %d patched", (int)resolution.replacements.size(), (int)resolution.patches.size());
 	if (layout != nullptr && layout->moved(*s.directory)) {
-		INFO_LOG(Log::System, "[mods] DATA.BIN grows from %d to %d bytes", (int)s.directory->archive_bytes(), (int)layout->directory.archive_bytes());
+		NOTICE_LOG(Log::System, "[mods] DATA.BIN grows from %d to %d bytes", (int)s.directory->archive_bytes(), (int)layout->directory.archive_bytes());
 	}
 	for (const auto &entry : resolution.replacements) {
 		INFO_LOG(Log::System, "[mods]   %s <- %s (%s)", s.format.FileName(entry.first).c_str(), entry.second.path.ToVisualString().c_str(), ModNameLocked(s, entry.second.mod).c_str());
@@ -145,6 +157,10 @@ static void ActivateNow(State &s, const Resolution &resolution) {
 	s.pendingCode.store(false, std::memory_order_relaxed);
 	s.active = resolution;
 	LogResolution(s, resolution, s.layout.get());
+	if (!resolution.empty()) {
+		ShowNotice(NoticeKind::Success, "Mods: files replaced",
+			std::to_string(resolution.replacements.size()) + " replaced, " + std::to_string(resolution.patches.size()) + " patched");
+	}
 }
 
 static bool CanSwitch(State &s, const Resolution &next) {
@@ -186,12 +202,78 @@ static void NoteProblems(State &s, FileId file) {
 		return;
 	for (const std::string &problem : content->problems) {
 		const std::string line = s.format.FileName(file) + ": " + problem;
-		WARN_LOG(Log::System, "[mods] %s", line.c_str());
+		ERROR_LOG(Log::System, "[mods] %s", line.c_str());
 		s.problems.push_back(line);
 	}
 }
 
 // ---- With a game ---------------------------------------------------------------------------------
+
+void Manager::StartGame(const Path &modsFolder, const std::string &discId, std::uint32_t ramBytes) {
+	std::lock_guard<std::mutex> guard(s_->lock);
+	State &s = *s_;
+	s.gameStarted = false;
+	s.appliedCode.clear();
+	s.codeRestartPending = false;
+	if (!IsSupportedGameId(discId))
+		return;
+	s.modsFolder = modsFolder;
+	s.library->LoadChoices(modsFolder / "mods.ini");
+	s.library->Scan(modsFolder);
+	s.loaded = true;
+	s.gameStarted = true;
+
+	const Resolution resolution = s.library->Resolve();
+	s.appliedCode = resolution.code;
+	std::vector<p3rd::CodeInput> inputs;
+	for (const std::string &id : resolution.code) {
+		const Mod *mod = s.library->Find(id);
+		if (mod != nullptr && mod->code)
+			inputs.push_back({mod->name, mod->code.get()});
+	}
+	if (inputs.empty())
+		return;
+	const p3rd::CodePlan plan = p3rd::PlanCodeMods(inputs, p3rd::HdCodeLayout(ramBytes));
+	size_t written = 0;
+	for (const p3rd::CodeWrite &write : plan.writes) {
+		if (GuestMemoryWrite(write.address, write.bytes.data(), write.bytes.size())) {
+			++written;
+		} else {
+			const std::string line = "code mod: a write of " + std::to_string(write.bytes.size()) + " bytes at " +
+				ToHex(write.address) + " is outside the game's memory";
+			ERROR_LOG(Log::System, "[mods] %s", line.c_str());
+			s.problems.push_back(line);
+		}
+	}
+	for (const std::string &problem : plan.problems) {
+		ERROR_LOG(Log::System, "[mods] code mod: %s", problem.c_str());
+		s.problems.push_back("code mod: " + problem);
+	}
+	for (const auto &loaded : plan.loaded)
+		NOTICE_LOG(Log::System, "[mods] code mod %s loaded at %s", loaded.first.c_str(), ToHex(loaded.second).c_str());
+	NOTICE_LOG(Log::System, "[mods] %d code mod(s) installed: %d writes, %d bytes of code", (int)inputs.size(), (int)written, (int)plan.loadedBytes);
+	// And on the screen, so that the player sees it without any log.
+	std::string names;
+	for (const p3rd::CodeInput &input : inputs) {
+		if (!names.empty())
+			names += ", ";
+		names += input.name;
+	}
+	const bool failed = written != plan.writes.size() || !plan.problems.empty();
+	if (failed) {
+		ShowNotice(NoticeKind::Error, "Mods: a code mod was not fully installed", names + ": " + (plan.problems.empty() ? std::string("some writes were outside the game's memory") : plan.problems.front()));
+	} else {
+		ShowNotice(NoticeKind::Success, "Mods: code installed", names + " (" + std::to_string(written) + " writes)");
+	}
+}
+
+void Manager::StopGame() {
+	std::lock_guard<std::mutex> guard(s_->lock);
+	State &s = *s_;
+	s.gameStarted = false;
+	s.appliedCode.clear();
+	s.codeRestartPending = false;
+}
 
 bool Manager::AttachDisc(const void *owner, ArchiveView::RawRead raw, std::uint64_t bytes, const Path &modsFolder) {
 	std::lock_guard<std::mutex> guard(s_->lock);
@@ -249,6 +331,9 @@ void Manager::DetachDisc(const void *owner) {
 	if (s.owner != owner)
 		return;
 	s.owner = nullptr;
+	// Nothing of this run is left to apply or to report.
+	s.restartPending = false;
+	s.switchedLive = false;
 	s.attached = false;
 	s.serving = false;
 	s.view.reset();
@@ -404,9 +489,13 @@ void Manager::Commit() {
 	std::string error;
 	if (!s.library->SaveChoices(s.modsFolder / "mods.ini", error))
 		ERROR_LOG(Log::System, "[mods] %s", error.c_str());
-	if (!s.attached)
+	if (!s.attached && !s.gameStarted)
 		return;
 	const Resolution wanted = s.library->Resolve();
+	// Code mods are in the game's memory from its start; changing them takes another start.
+	s.codeRestartPending = s.gameStarted && wanted.code != s.appliedCode;
+	if (!s.attached)
+		return;
 	if (wanted.SameFiles(s.active)) {
 		s.active = wanted;  // the conflicts may read differently
 		s.restartPending = false;
@@ -433,6 +522,8 @@ std::string Manager::ModName(const std::string &id) const {
 std::string Manager::PendingNote() const {
 	std::lock_guard<std::mutex> guard(s_->lock);
 	const State &s = *s_;
+	if (s.codeRestartPending)
+		return "Restart the game to apply: code mods are installed when the game starts.";
 	if (s.restartPending)
 		return "Restart the game to apply: a file changes size in a way the running game cannot take.";
 	if (s.waiting)

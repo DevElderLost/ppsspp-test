@@ -17,8 +17,12 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include "Common/Common.h"
 #include "Common/GPU/Shader.h"
+#include "GPU/Common/ReshadeEffect.h"
 #include "Common/System/Display.h"
 
 struct CardboardSettings {
@@ -182,7 +186,8 @@ public:
 	// One of these must be called every frame.
 	void SourceBlank();
 	void SourceTexture(Draw::Texture *texture, int bufferWidth, int bufferHeight);
-	void SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight);
+	// scene: snapshot of the 3D scene before the HUD was drawn (see FramebufferManagerCommon::CaptureUIScene), or null.
+	void SourceFramebuffer(Draw::Framebuffer *fb, int bufferWidth, int bufferHeight, Draw::Framebuffer *scene = nullptr);
 
 	void RunPostshaderPasses(const DisplayLayoutConfig &config, OutputFlags flags, int uvRotation, float u0, float v0, float u1, float v1);
 	void CopyToOutput(const DisplayLayoutConfig &config);
@@ -201,6 +206,8 @@ protected:
 	Draw::ShaderModule *CompileShaderModule(ShaderStage stage, ShaderLanguage lang, const std::string &src, std::string *errorString) const;
 	Draw::Pipeline *CreatePipeline(std::vector<Draw::ShaderModule *> shaders, bool postShader, const UniformBufferDesc *uniformDesc, bool alphaBlend = false) const;
 	bool CompilePostShader(const ShaderInfo *shaderInfo, Draw::Pipeline **outPipeline) const;
+	bool BuildReshadeShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next);
+	void DestroyReshadePrograms();
 	bool BuildPostShader(const DisplayLayoutConfig &config, const ShaderInfo *shaderInfo, const ShaderInfo *next, Draw::Pipeline **outPipeline);
 	bool AllocateFramebuffer(int w, int h);
 
@@ -229,6 +236,29 @@ protected:
 	std::vector<Draw::Pipeline *> postShaderPipelines_;
 	std::vector<Draw::Framebuffer *> postShaderFramebuffers_;
 	std::vector<ShaderInfo> postShaderInfo_;
+
+	// ReShade FX effects in the chain: each pass of an effect is one entry in postShaderPipelines_ / postShaderInfo_.
+	// A ReShade FX effect is ONE entry of the chain (reshadeProgram >= 0 in its ShaderInfo, null pipeline): all its
+	// passes run in RunReshadeEffect, which owns the render-target textures and the intermediate back buffers.
+	struct ReshadeRuntime {
+		std::shared_ptr<ReshadeProgram> program;
+		std::vector<Draw::Pipeline *> pipelines;       // one per pass
+		std::vector<Draw::Texture *> images;           // textures loaded from files
+		std::vector<Draw::Framebuffer *> targets;      // the effect's render-target textures
+		Draw::Framebuffer *backBuffers[2] = {};        // back buffer copies between passes that write the screen
+		std::vector<Draw::SamplerState *> samplers;    // [pass * kReshadeMaxTextures + slot]
+		std::vector<Draw::Framebuffer *> shadows;      // copies for passes that read the texture they render into
+		// UI protection: where the per-game mask is white, the original image is put back over the effect.
+		Draw::Texture *uiMask = nullptr;
+		Draw::Pipeline *composite[3] = {};  // see ReshadeCompositeShaders
+		Draw::Framebuffer *effectOutput = nullptr;
+		Draw::SamplerState *compositeSampler = nullptr;
+		double startTime = 0.0;
+		double lastTime = 0.0;
+		ReshadeFrameState state;
+	};
+	std::vector<ReshadeRuntime> reshade_;
+	void RunReshadeEffect(ReshadeRuntime &rt, Draw::Framebuffer *output, bool useNearest);
 	std::vector<Draw::Framebuffer *> previousFramebuffers_;
 	
 	Draw::Pipeline *stereoPipeline_ = nullptr;
@@ -239,6 +269,7 @@ protected:
 
 	Draw::Texture *srcTexture_ = nullptr;
 	Draw::Framebuffer *srcFramebuffer_ = nullptr;
+	Draw::Framebuffer *srcSceneFramebuffer_ = nullptr;  // HUD-free snapshot of srcFramebuffer_, when there is one
 	int srcWidth_ = 0;
 	int srcHeight_ = 0;
 	bool hasVideo_ = false;

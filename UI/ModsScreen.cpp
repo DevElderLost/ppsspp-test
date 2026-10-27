@@ -103,13 +103,17 @@ void ModsScreen::CreateContentViews(UI::ViewGroup *parent) {
 	for (size_t i = 0; i < list.size() && i < ids_.size(); ++i) {
 		const Mods::Mod &mod = list[i];
 		const std::string id = mod.id;
-		LinearLayout *row = column->Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		CheckBox *check = row->Add(new CheckBox(&enabled_[i], mod.name, "", new LinearLayoutParams(1.0f)));
-		check->SetEnabled(mod.unusable.empty());
-		check->OnClick.Add([this, id, i](UI::EventParams &) {
-			Mods::Manager::Instance().SetEnabled(id, enabled_[i]);
-			Changed();
-		});
+		// The name first, as plain text: it must show whatever else the row does. Then the switch at the full
+		// width of the column, as "Use mods" is, and the buttons that move the mod on a row of their own.
+		column->Add(new TextView(mod.name, ALIGN_LEFT, false, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, UI::Margins(16, 8, 8, 0))))->SetBig(true);
+		if (mod.unusable.empty()) {
+			CheckBox *check = column->Add(new CheckBox(&enabled_[i], sy->T("Turn on this mod")));
+			check->OnClick.Add([this, id, i](UI::EventParams &) {
+				Mods::Manager::Instance().SetEnabled(id, enabled_[i]);
+				Changed();
+			});
+		}
+		LinearLayout *row = column->Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)));
 		row->Add(new Choice(sy->T("Up"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)))->OnClick.Add([this, id](UI::EventParams &) {
 			Mods::Manager::Instance().Move(id, +1);
 			Changed();

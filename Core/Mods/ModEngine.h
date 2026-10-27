@@ -57,6 +57,12 @@ public:
 	void DetachDisc(const void *owner);
 	bool Attached() const;
 
+	// The game has been loaded into memory and has not run yet. Installs the code mods that are on: what they
+	// write is written to guest memory now, as the mhp3reload loader would at the start of the game. Needs the
+	// disc id (only the HD version is known) and the size of the guest RAM. Works before and without DATA.BIN.
+	void StartGame(const Path &modsFolder, const std::string &discId, std::uint32_t ramBytes);
+	void StopGame();
+
 	// Whether the mods change what the game reads from DATA.BIN now. Cheap.
 	bool Serving() const;
 	// DATA.BIN's size as the game sees it: larger when a mod's file grew it.
@@ -95,9 +101,15 @@ private:
 	State *s_;
 };
 
+// A short message for the player, shown on the screen while the game runs (the log level of most phones
+// hides the engine's own messages, so what matters is also said here).
+enum class NoticeKind { Info, Success, Error };
+void ShowNotice(NoticeKind kind, const std::string &title, const std::string &text);
+
 // Guest memory, which the engine writes after an overlay loads. Kept apart so that the rest of the
 // engine can be tested without a running PSP.
 bool GuestMemoryMatches(std::uint32_t address, const std::uint8_t *expected, std::size_t size);
-void GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size);
+// Returns whether it was written; an address outside the game's memory is not.
+bool GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size);
 
 }  // namespace Mods

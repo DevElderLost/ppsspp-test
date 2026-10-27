@@ -122,6 +122,8 @@ set(GPU_SOURCES
 	Common/Overlay.h
 	Common/PresentationCommon.cpp
 	Common/PresentationCommon.h
+	Common/ReshadeEffect.cpp
+	Common/ReshadeEffect.h
 	Common/ReinterpretFramebuffer.cpp
 	Common/ReinterpretFramebuffer.h
 	Common/ShaderId.cpp
@@ -235,7 +237,7 @@ setup_target_project(GPU GPU)
 # already carries its own GL/Vulkan loader abstractions): raw gl*() calls in GPU/GLES, direct
 # ZSTD_compress/decompress calls in GPU/Debugger/Record.cpp and Playback.cpp, and Playback.cpp
 # also calls snappy_uncompress() directly.
-target_link_libraries(GPU PUBLIC ${OPENGL_LIBRARIES} ${X11_LIBRARIES} Ext::Snappy)
+target_link_libraries(GPU PUBLIC ${OPENGL_LIBRARIES} ${X11_LIBRARIES} Ext::Snappy reshadefx)
 
 if(USE_SYSTEM_ZSTD)
 	target_include_directories(GPU PRIVATE ${ZSTD_INCLUDE_DIR})

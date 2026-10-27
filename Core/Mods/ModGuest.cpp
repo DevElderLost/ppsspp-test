@@ -19,11 +19,17 @@
 // Copyright (c) 2026 PSPRecomp contributors, Copyright (c) 2026 Yakumo contributors.
 // The MIT notice is in Core/Mods/LICENSE-Yakumo.txt.
 
+#include "Common/System/OSD.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MemMap.h"
 #include "Core/Mods/ModEngine.h"
 
 namespace Mods {
+
+void ShowNotice(NoticeKind kind, const std::string &title, const std::string &text) {
+	const OSDType type = kind == NoticeKind::Error ? OSDType::MESSAGE_ERROR : kind == NoticeKind::Success ? OSDType::MESSAGE_SUCCESS : OSDType::MESSAGE_INFO;
+	g_OSD.Show(type, title, text, kind == NoticeKind::Error ? 12.0f : 8.0f);
+}
 
 bool GuestMemoryMatches(std::uint32_t address, const std::uint8_t *expected, std::size_t size) {
 	if (!Memory::IsValidRange(address, (u32)size))
@@ -36,13 +42,14 @@ bool GuestMemoryMatches(std::uint32_t address, const std::uint8_t *expected, std
 	return true;
 }
 
-void GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size) {
+bool GuestMemoryWrite(std::uint32_t address, const std::uint8_t *data, std::size_t size) {
 	if (size == 0 || !Memory::IsValidRange(address, (u32)size))
-		return;
+		return false;
 	Memory::MemcpyUnchecked(address, data, (u32)size);
 	// Patched code must not run from a stale translation.
 	if (currentMIPS)
 		currentMIPS->InvalidateICacheRangeDeferred(address, (int)size);
+	return true;
 }
 
 }  // namespace Mods

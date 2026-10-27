@@ -538,9 +538,31 @@ void GLQueueRunner::InitCreateFramebuffer(const GLRInitStep &step) {
 		}
 	};
 
-	// Color texture is same everywhere
+	// Color texture is the same everywhere, except that post-processing can ask for half floats (HDR) and mipmaps.
 	glGenFramebuffers(1, &fbo->handle);
-	initFBOTexture(fbo->color_texture, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, true);
+	GLint colorInternalFormat = GL_RGBA;
+	GLenum colorDataType = GL_UNSIGNED_BYTE;
+#if !defined(USING_GLES2)
+	if (fbo->colorFormat == Draw::DataFormat::R16G16B16A16_FLOAT) {
+		const bool canRenderFloat = gl_extensions.IsGLES ? (gl_extensions.GLES3 && (gl_extensions.EXT_color_buffer_float || gl_extensions.EXT_color_buffer_half_float)) : true;
+		if (canRenderFloat) {
+			colorInternalFormat = GL_RGBA16F;
+			colorDataType = GL_HALF_FLOAT;
+		} else {
+			WARN_LOG(Log::G3D, "No float color buffers, using RGBA8 for %s", fbo->Tag());
+			fbo->colorFormat = Draw::DataFormat::R8G8B8A8_UNORM;
+		}
+	}
+#else
+	fbo->colorFormat = Draw::DataFormat::R8G8B8A8_UNORM;
+#endif
+	initFBOTexture(fbo->color_texture, colorInternalFormat, GL_RGBA, colorDataType, true);
+	if (fbo->mipLevels > 1 && (!gl_extensions.IsGLES || gl_extensions.GLES3)) {
+		// Allocated and filled by glGenerateMipmap after each render pass into this framebuffer.
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, fbo->mipLevels - 1);
+	} else {
+		fbo->mipLevels = 1;
+	}
 
 retry_depth:
 	if (!fbo->z_stencil_) {
@@ -1482,6 +1504,15 @@ void GLQueueRunner::PerformRenderPass(const GLRStep &step, bool first, bool last
 		glDisable(GL_SCISSOR_TEST);
 		scissorTestOn_ = false;
 	}
+	if (step.render.framebuffer && step.render.framebuffer->mipLevels > 1) {
+		// Mipmapped framebuffer (post-processing): fill the lower levels from what was just rendered.
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, step.render.framebuffer->color_texture.texture);
+		glGenerateMipmap(GL_TEXTURE_2D);
+		glBindTexture(GL_TEXTURE_2D, 0);
+		CHECK_GL_ERROR_IF_DEBUG();
+	}
+
 	if (depthEnabled)
 		glDisable(GL_DEPTH_TEST);
 	if (stencilEnabled)
