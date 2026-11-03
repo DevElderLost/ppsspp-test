@@ -19,9 +19,11 @@
 
 #include "ppsspp_config.h"
 
+#include "Common/Common.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
+#include "Common/UI/PopupScreens.h"
 #include "Common/UI/ScreenManager.h"
 #include "Common/UI/View.h"
 #include "Core/Config.h"
@@ -89,6 +91,19 @@ void BuildControlsSettings(SettingsPage *page) {
 		page->Choice("Gesture mapping").OpensScreen().OnClick([host](UI::EventParams &e) {
 			host->PageScreenManager()->push(new GestureMappingScreen(host->PageGamePath()));
 		}).Enabled(&g_Config.bShowTouchControls);
+
+		// Fork addition: drag a finger over a free part of the screen to move the right analog stick.
+		page->Bool(&g_Config.bTouchCameraDrag, "Free screen camera drag").Enabled(&g_Config.bShowTouchControls);
+		page->Hint({ I18NCat::CONTROLS, "Free screen camera drag Tip", "Drag a finger over a free part of the screen to move the right analog stick. Turn on \"Right analog stick custom\" to map it to buttons or the left stick" });
+		static const char *cameraZones[] = { "Whole screen", "Right half", "Left half" };
+		page->Custom("Camera drag area", [host](UI::ViewGroup *parent) -> UI::View * {
+			return parent->Add(new PopupMultiChoice(&g_Config.iTouchCameraZone, T(I18NCat::CONTROLS, "Camera drag area"), cameraZones, 0, ARRAY_SIZE(cameraZones), I18NCat::CONTROLS, host->PageScreenManager()));
+		}).Enabled(&g_Config.bTouchCameraDrag);
+		page->Custom("Camera drag sensitivity", [host](UI::ViewGroup *parent) -> UI::View * {
+			return parent->Add(new PopupSliderChoiceFloat(&g_Config.fTouchCameraSensitivity, 0.1f, 5.0f, 1.0f, T(I18NCat::CONTROLS, "Camera drag sensitivity"), 0.1f, host->PageScreenManager(), "x"));
+		}).Enabled(&g_Config.bTouchCameraDrag);
+		page->Bool(&g_Config.bTouchCameraInvertX, "Invert camera drag horizontally").Enabled(&g_Config.bTouchCameraDrag);
+		page->Bool(&g_Config.bTouchCameraInvertY, "Invert camera drag vertically").Enabled(&g_Config.bTouchCameraDrag);
 
 		page->Setting(&g_Config.iTouchButtonStyle).Enabled(&g_Config.bShowTouchControls);
 

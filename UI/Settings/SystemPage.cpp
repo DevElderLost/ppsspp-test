@@ -41,6 +41,7 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/HLE/sceUtility.h"
+#include "Core/ModImport.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
 #include "Core/Util/PathUtil.h"
@@ -49,6 +50,7 @@
 #include "UI/MemStickScreen.h"
 #include "UI/MiscScreens.h"
 #include "UI/MiscViews.h"
+#include "UI/ModsScreen.h"
 #include "UI/SettingsPage.h"
 #include "UI/Settings/MainSettingsPages.h"
 #include "UI/Theme.h"
@@ -204,6 +206,39 @@ void BuildSystemSettings(SettingsPage *page, SystemPageState *state) {
 	page->Header("Cheats");
 	page->Setting(&g_Config.bEnableCheats);
 	page->Setting(&g_Config.bEnablePlugins);
+
+	// Fork addition: mod import and the mods list.
+	page->Header("Mods");
+	page->Choice({ I18NCat::SYSTEM, "Import mod..." }).OnClick([host](UI::EventParams &e) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		System_BrowseForFolder(host->PageRequesterToken(), sy->T("Choose the folder of the mod"), Path(), [](std::string_view value, int) {
+			auto sy = GetI18NCategory(I18NCat::SYSTEM);
+			const Path modsFolder = ModImport::GetModsFolder();
+			const ModImport::Check check = ModImport::CheckImport(Path(value), modsFolder);
+			if (!check.mods.size()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Nothing to import"), check.problem, 8.0);
+				return;
+			}
+			const ModImport::Result result = ModImport::Import(check, modsFolder);
+			std::string imported;
+			for (const std::string &id : result.imported) {
+				if (!imported.empty())
+					imported += ", ";
+				imported += id;
+			}
+			if (!result.error.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Could not import the mod"), result.error, 8.0);
+			} else if (!result.backups.empty()) {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported + " (" + std::string(sy->T("the old copy is in MODS/.backup")) + ")", 6.0);
+			} else {
+				g_OSD.Show(OSDType::MESSAGE_SUCCESS, sy->T("Mod imported"), imported, 5.0);
+			}
+		});
+	});
+	page->Choice({ I18NCat::SYSTEM, "Mods..." }).OpensScreen().OnClick([host](UI::EventParams &e) {
+		host->PageScreenManager()->push(new ModsScreen(host->PageGamePath()));
+	});
+	page->Hint({ I18NCat::SYSTEM, "Import mod Tip", "Copies the mod folder (the one with mod.ini) to PSP/MODS in the memory stick. Mods... turns them on, for Monster Hunter Portable 3rd HD (NPJB-40001). Unpack downloaded archives first" });
 
 	page->Header("Emulation");
 
