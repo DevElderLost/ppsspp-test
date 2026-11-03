@@ -141,6 +141,7 @@
 #include "UI/DevScreens.h"
 #include "UI/DiscordIntegration.h"
 #include "UI/EmuScreen.h"
+#include "UI/FirmwareScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GameSettingsScreen.h"
 #include "UI/GPUDriverTestScreen.h"
@@ -372,7 +373,7 @@ void runImDebugger(Draw::DrawContext *draw) {
 
 			// Read the TTF font
 			size_t propSize = 0;
-			const uint8_t *propFontData = g_VFS.ReadFile("Roboto_Condensed-Regular.ttf", &propSize);
+			const uint8_t *propFontData = g_VFS.ReadFile("Roboto-Regular.ttf", &propSize);
 			size_t fixedSize = 0;
 			const uint8_t *fixedFontData = g_VFS.ReadFile("Inconsolata-Regular.ttf", &fixedSize);
 			// This call works even if fontData is nullptr, in which case the font just won't get loaded.
@@ -900,6 +901,9 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 			GameSettingsScreen *settings = new GameSettingsScreen(Path());
 			settings->OpenDeveloperTools();
 			g_screenManager->push(settings);
+		} else if (equals(cmdLineOptions.startScreen.value(), "firmware")) {
+			g_screenManager->switchScreen(new MainScreen());
+			g_screenManager->push(new FirmwareScreen(Path()));
 		} else {
 			WARN_LOG(Log::System, "Unknown start screen '%s'", cmdLineOptions.startScreen.value().c_str());
 			g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::DEFAULT));
@@ -1005,10 +1009,6 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 	ui_draw2d.Init(g_draw, texColorPipeline);
 
 	uiContext->Init(g_draw, texColorPipeline, colorPipeline, &ui_draw2d);
-	if (uiContext->Text()) {
-		// This seems unnecessary.
-		// uiContext->Text()->SetOrCreateFont(FontStyle(FontID::invalid(), FontFamily::SansSerif, 20, FontStyleFlags::Default));
-	}
 
 	g_screenManager->setUIContext(uiContext);
 	// Live before the queue is processed: a removal that comes in while the outputs' swapchains are being

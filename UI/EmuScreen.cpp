@@ -665,7 +665,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 				// temporary workaround for hotkey its freeze the ui when open chat screen using hotkey and native keyboard is enable
 				if (g_Config.bBypassOSKWithKeyboard) {
 					// TODO: Make translatable.
-					g_OSD.Show(OSDType::MESSAGE_INFO, "Disable \"Use system native keyboard\" to use chat hotkey", 2.0f);
+					g_OSD.Show(OSDType::MESSAGE_INFO, "Disable \"Use system native keyboard\" to use chat hotkey", 2.0f, "chatHotKey");
 				} else {
 					OpenChat(true);
 				}
@@ -943,7 +943,7 @@ void EmuScreen::ProcessVKey(VirtKey virtKey, bool down) {
 				if (SaveState::CanRewind()) {
 					SaveState::Rewind(&ShowMessageAfterSaveStateAction);
 				} else {
-					g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("norewind", "No rewind save states available"), 2.0);
+					g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("norewind", "No rewind save states available"), 2.0, "norewind");
 				}
 			}
 		}
@@ -1194,10 +1194,6 @@ bool EmuScreen::key(const KeyInput &key) {
 
 bool EmuScreen::touch(const TouchInput &touch) {
 	System_Notify(SystemNotification::ACTIVITY);
-
-	if (imposeHome_->IsOpen() && imposeHome_->Touch(touch)) {
-		return true;
-	}
 
 	bool ignoreGamepad = false;
 
@@ -2029,11 +2025,6 @@ void EmuScreen::renderUI() {
 	// This sets up some important states but not the viewport.
 	ctx->Begin();
 
-	if (root_) {
-		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
-		root_->Draw(*ctx);
-	}
-
 	if (imposeHome_->IsOpen() && PSP_IsInited()) {
 		// Over the PSP screen, wherever the layout puts it.
 		const DisplayLayoutConfig &config = GameLayoutConfig();
@@ -2041,6 +2032,11 @@ void EmuScreen::renderUI() {
 		FRect rc;
 		CalculateDisplayOutputRect(config, &rc, 480.0f, 272.0f, frame, config.iInternalScreenRotation);
 		imposeHome_->Draw(*ctx, Bounds(rc.x * g_display.dpi_scale_x, rc.y * g_display.dpi_scale_y, rc.w * g_display.dpi_scale_x, rc.h * g_display.dpi_scale_y));
+	}
+
+	if (root_) {
+		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
+		root_->Draw(*ctx);
 	}
 
 	if (PSP_IsInited()) {

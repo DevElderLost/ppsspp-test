@@ -659,6 +659,7 @@ void __NetInit() {
 
 	__ResetInitNetLib();
 	__NetApctlInit();
+	__NetInetInit();
 	__NetCallbackInit();
 }
 
@@ -696,6 +697,15 @@ void __NetShutdown() {
 	}
 }
 
+// How long each step of connecting to the access point takes. On a PSP that has connected before
+// (an open network, pspautotests net/inet/timing), Connect is in JOINING after 11 ms, GETTING_IP after
+// about 2.6 s and GOT_IP after about 3.6 s (6.6 s the first time, getting the address taking longer),
+// and Disconnect is back in DISCONNECTED after 1.1 s. Games wait for it anyway, so this is quicker.
+constexpr int APCTL_JOINING_DELAY_US = 10000;
+constexpr int APCTL_GETTING_IP_DELAY_US = 1250000;
+constexpr int APCTL_GOT_IP_DELAY_US = 500000;
+constexpr int APCTL_DISCONNECT_DELAY_US = 500000;
+
 static void __UpdateApctlHandlers(u32 oldState, u32 newState, u32 flag, u32 error) {
 	std::lock_guard<std::recursive_mutex> apctlGuard(apctlEvtMtx);
 	apctlEvents.push_back({ oldState, newState, flag, error });
@@ -712,7 +722,7 @@ void netValidateLoopMemory() {
 
 // This feels like a dubious proposition, mostly...
 void __NetDoState(PointerWrap &p) {
-	auto s = p.Section("sceNet", 1, 7);
+	auto s = p.Section("sceNet", 1, 9);
 	if (!s)
 		return;
 
@@ -780,6 +790,7 @@ void __NetDoState(PointerWrap &p) {
 		apctlEvents.clear();
 		apctlProdCodeAddr = 0;
 	}
+	__NetInetDoState(p, s >= 8, s >= 9);
 
 	if (p.mode == p.MODE_READ) {
 		// Let's not change "Inited" value when Loading SaveState in the middle of multiplayer to prevent memory & port leaks
@@ -812,7 +823,8 @@ void __NetApctlCallbacks()
 
 	// How AP works probably like this: Game use sceNetApctl function -> sceNetApctl let the hardware know and do their's thing and have a new State -> Let the game know the resulting State through Event on their handler
 	if (!apctlEvents.empty()) {
-		auto& args = apctlEvents.front();
+		// Copy it, the pop below destroys the element.
+		auto args = apctlEvents.front();
 		auto& oldState = args.data[0];
 		auto& newState = args.data[1];
 		auto& event = args.data[2];
@@ -820,10 +832,13 @@ void __NetApctlCallbacks()
 		apctlEvents.pop_front();
 
 		// Adjust delay according to current event.
-		if (event == PSP_NET_APCTL_EVENT_CONNECT_REQUEST || event == PSP_NET_APCTL_EVENT_GET_IP || event == PSP_NET_APCTL_EVENT_SCAN_REQUEST || event == PSP_NET_APCTL_EVENT_ESTABLISHED)
-			delayus = adhocEventDelay;
-		else
-			delayus = adhocEventPollDelay;
+		switch (event) {
+		case PSP_NET_APCTL_EVENT_CONNECT_REQUEST: delayus = APCTL_JOINING_DELAY_US; break;
+		case PSP_NET_APCTL_EVENT_ESTABLISHED: delayus = APCTL_GETTING_IP_DELAY_US; break;
+		case PSP_NET_APCTL_EVENT_GET_IP: delayus = APCTL_GOT_IP_DELAY_US; break;
+		case PSP_NET_APCTL_EVENT_SCAN_REQUEST: delayus = adhocEventDelay; break;
+		default: delayus = adhocEventPollDelay; break;
+		}
 
 		// Do we need to change the oldState? even if there was error?
 		if (error == 0)
@@ -835,22 +850,23 @@ void __NetApctlCallbacks()
 		// Need to make sure netApctlState is updated before calling the callback's mipscall so the game can GetState()/GetInfo() within their handler's subroutine and make use the new State/Info
 		// Should we update NewState & Error accordingly to Event before executing the mipscall ? sceNetApctl* functions might want to set the error value tho, so we probably should leave it untouched, right?
 		//error = 0;
+		// Each next event starts from the state this one ends in.
 		switch (event) {
 		case PSP_NET_APCTL_EVENT_CONNECT_REQUEST:
 			newState = PSP_NET_APCTL_STATE_JOINING; // Should we set the State to PSP_NET_APCTL_STATE_DISCONNECTED if there was error?
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 }); // Should we use PSP_NET_APCTL_EVENT_EAP_AUTH if securityType is not NONE?
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 }); // Should we use PSP_NET_APCTL_EVENT_EAP_AUTH if securityType is not NONE?
 			break;
 
 		case PSP_NET_APCTL_EVENT_ESTABLISHED:
 			newState = PSP_NET_APCTL_STATE_GETTING_IP;
 			// FIXME: Official prx seems to return ERROR 0x80410280 on the next event when using invalid connection profile to Connect?
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_GET_IP, 0 });
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_GET_IP, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_GET_IP:
@@ -860,21 +876,21 @@ void __NetApctlCallbacks()
 
 		case PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
-			delayus = adhocDefaultDelay / 2; // FIXME: Similar to Adhocctl Disconnect, we probably need to change the state within a frame-time (or less to be safer)
+			delayus = APCTL_DISCONNECT_DELAY_US;
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_REQUEST:
 			newState = PSP_NET_APCTL_STATE_SCANNING;
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_SCAN_COMPLETE, 0 });
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_SCAN_COMPLETE, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_COMPLETE:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
 			if (error == 0)
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_SCAN_STOP, 0 });
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_SCAN_STOP, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_STOP:
@@ -884,25 +900,25 @@ void __NetApctlCallbacks()
 		case PSP_NET_APCTL_EVENT_EAP_AUTH: // Is this suppose to happen between JOINING and ESTABLISHED ?
 			newState = PSP_NET_APCTL_STATE_EAP_AUTH;
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_KEY_EXCHANGE, 0 }); // not sure if KEY_EXCHANGE is the next step after AUTH or not tho
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_KEY_EXCHANGE, 0 }); // not sure if KEY_EXCHANGE is the next step after AUTH or not tho
 			break;
 
 		case PSP_NET_APCTL_EVENT_KEY_EXCHANGE: // Is this suppose to happen between JOINING and ESTABLISHED ?
 			newState = PSP_NET_APCTL_STATE_KEY_EXCHANGE;
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 });
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_RECONNECT:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
 			if (error != 0)
-				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+				apctlEvents.push_front({ newState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
 			else
-				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0 });
+				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_ERROR:
@@ -994,7 +1010,7 @@ static u32 sceNetTerm() {
 	int retval = Net_Term();
 
 	// Give time to make sure everything are cleaned up
-	hleEatMicro(adhocDefaultDelay);
+	hleEatMicro(209);
 	return hleLogInfo(Log::sceNet, retval);
 }
 
@@ -1046,7 +1062,7 @@ static int sceNetInit(MIPSState *mips, u32 poolSize, u32 calloutPri, u32 callout
 
 	INFO_LOG(Log::sceNet, "sceNetInit(poolsize=%d, calloutpri=%i, calloutstack=%d, netintrpri=%i, netintrstack=%d) at %08x", poolSize, calloutPri, calloutStack, netinitPri, netinitStack, mips->pc);
 	
-	netMallocStat.pool = poolSize - 0x20; // On Vantage Master Portable this is slightly (32 bytes) smaller than the poolSize arg when tested with JPCSP + prx files
+	netMallocStat.pool = poolSize - 0x20; // 0x1FFE0 for a 0x20000 pool, as on the PSP (pspautotests net/inet/offline)
 	netMallocStat.maximum = 0x4050; // Dummy maximum foot print
 	netMallocStat.free = netMallocStat.pool; // Dummy free size, we should set this high enough to prevent any issue (ie. Vantage Master Portable), this is probably the only field being checked by games?
 
@@ -1062,12 +1078,24 @@ static int sceNetInit(MIPSState *mips, u32 poolSize, u32 calloutPri, u32 callout
 
 // Free(delete) thread info / data. 
 // Normal usage: sceKernelDeleteThread followed by sceNetFreeThreadInfo with the same threadID as argument
+// Both take any thread, also the current one or one that has ended (pspautotests net/inet/offline).
+static bool IsThreadID(SceUID thid) {
+	int type = 0;
+	return thid != 0 && kernelObjects.GetIDType(thid, &type) && type == SCE_KERNEL_TMID_Thread;
+}
+
 static int sceNetFreeThreadinfo(SceUID thid) {
+	if (!IsThreadID(thid)) {
+		return hleLogError(Log::sceNet, 0x80410104, "not a thread");
+	}
 	return hleLogError(Log::sceNet, 0, "UNIMPL");
 }
 
 // Abort a thread.
 static int sceNetThreadAbort(SceUID thid) {
+	if (!IsThreadID(thid)) {
+		return hleLogError(Log::sceNet, 0x80410104, "not a thread");
+	}
 	return hleLogError(Log::sceNet, 0, "UNIMPL");
 }
 
@@ -1096,8 +1124,11 @@ static u32 sceWlanGetEtherAddr(u32 addrAddr) {
 
 static u32 sceNetGetLocalEtherAddr(u32 addrAddr) {
 	// FIXME: Return 0x80410180 (pspnet[_core] error code?) before successful attempt to Create/Connect/Join a Group? (ie. adhocctlCurrentMode == ADHOCCTL_MODE_NONE)
-	if (adhocctlCurrentMode == ADHOCCTL_MODE_NONE)
+	// Fails while apctl is initialized but not connected (pspautotests net/adhoc/apctlinit). PES 2009 polls it
+	// until it succeeds once apctl has connected.
+	if (adhocctlCurrentMode == ADHOCCTL_MODE_NONE && !__NetApctlConnected()) {
 		return hleLogDebug(Log::sceNet, 0x80410180, "address not available?");
+	}
 
 	return sceWlanGetEtherAddr(addrAddr);
 }
@@ -1114,12 +1145,13 @@ static u32 sceWlanGetSwitchState() {
 static void sceNetEtherNtostr(MIPSState *mips, u32 macPtr, u32 bufferPtr) {
 	DEBUG_LOG(Log::sceNet, "sceNetEtherNtostr(%08x, %08x) at %08x", macPtr, bufferPtr, mips->pc);
 
-	if (Memory::IsValidAddress(bufferPtr) && Memory::IsValidAddress(macPtr)) {
+	// "xx:xx:xx:xx:xx:xx" and a null.
+	if (Memory::IsValidRange(bufferPtr, 18) && Memory::IsValidRange(macPtr, ETHER_ADDR_LEN)) {
 		char *buffer = (char *)Memory::GetPointerWriteUnchecked(bufferPtr);
 		const u8 *mac = Memory::GetPointerUnchecked(macPtr);
 
 		// MAC address is always 6 bytes / 48 bits.
-		sprintf(buffer, "%02x:%02x:%02x:%02x:%02x:%02x",
+		snprintf(buffer, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
 			mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 		VERBOSE_LOG(Log::sceNet, "sceNetEtherNtostr - [%s]", buffer);
@@ -1142,9 +1174,9 @@ static int hex_to_digit(int c) {
 static void sceNetEtherStrton(u32 bufferPtr, u32 macPtr) {
 	DEBUG_LOG(Log::sceNet, "sceNetEtherStrton(%08x, %08x)", bufferPtr, macPtr);
 
-	if (Memory::IsValidAddress(bufferPtr) && Memory::IsValidAddress(macPtr)) {
+	if (Memory::IsValidNullTerminatedString(bufferPtr) && Memory::IsValidRange(macPtr, ETHER_ADDR_LEN)) {
 		const char *buffer = (const char *)Memory::GetPointerUnchecked(bufferPtr);
-		u8 *mac = Memory::GetPointerWriteOrException(macPtr);
+		u8 *mac = Memory::GetPointerWriteUnchecked(macPtr);
 
 		// MAC address is always 6 pairs of hex digits.
 		// TODO: Funny stuff happens if it's too short.
@@ -1170,7 +1202,7 @@ static void sceNetEtherStrton(u32 bufferPtr, u32 macPtr) {
 			}
 		}
 
-		VERBOSE_LOG(Log::sceNet, "sceNetEtherStrton - [%s]", mac2str((SceNetEtherAddr*)Memory::GetPointerOrException(macPtr)).c_str());
+		VERBOSE_LOG(Log::sceNet, "sceNetEtherStrton - [%s]", mac2str((const SceNetEtherAddr *)Memory::GetPointerUnchecked(macPtr)).c_str());
 		// Seems to maybe kinda return the last value.  Probably returns void.
 		//return value;
 	}
@@ -1181,7 +1213,7 @@ static void sceNetEtherStrton(u32 bufferPtr, u32 macPtr) {
 static int sceNetGetMallocStat(u32 statPtr) {
 	auto stat = PSPPointer<SceNetMallocStat>::Create(statPtr);
 	if (!stat.IsValid())
-		return hleLogError(Log::sceNet, 0, "invalid address");
+		return hleLogError(Log::sceNet, 0x80410103, "invalid address");
 
 	*stat = netMallocStat;
 	stat.NotifyWrite("sceNetGetMallocStat");
@@ -1268,7 +1300,7 @@ static int sceNetApctlInit(MIPSState *mips, int stackSize, int initPriority) {
 		userMemory.Free(apctlProdCodeAddr);
 	}
 	apctlProdCodeAddr = userMemory.Alloc(structsz, false, "ApctlAdhocId");
-	SceNetAdhocctlAdhocId* prodCode = (SceNetAdhocctlAdhocId*)Memory::GetCharPointer(apctlProdCodeAddr);
+	SceNetAdhocctlAdhocId* prodCode = Memory::IsValidRange(apctlProdCodeAddr, structsz) ? (SceNetAdhocctlAdhocId *)Memory::GetPointerWriteUnchecked(apctlProdCodeAddr) : nullptr;
 	if (prodCode) {
 		memset(prodCode, 0, structsz);
 		// TODO: Use a 9-characters product id instead of disc id (ie. not null-terminated(VT_UTF8_SPE) and shouldn't be variable size?)
@@ -1494,6 +1526,10 @@ static int NetApctl_AddHandler(u32 handlerPtr, u32 handlerArg) {
 // TODO: Should we allow the same handler to be added more than once?
 static u32 sceNetApctlAddHandler(u32 handlerPtr, u32 handlerArg) {
 	INFO_LOG(Log::sceNet, "%s(%08x, %08x)", __FUNCTION__, handlerPtr, handlerArg);
+	// A game gets two (pspautotests net/inet/offline).
+	if (apctlHandlers.size() >= MAX_APCTL_GAME_HANDLERS) {
+		return hleLogError(Log::sceNet, 0x80410A0F, "too many handlers");
+	}
 	return NetApctl_AddHandler(handlerPtr, handlerArg);
 }
 
@@ -1510,6 +1546,14 @@ static int NetApctl_DelHandler(u32 handlerID) {
 
 static int sceNetApctlDelHandler(u32 handlerID) {
 	INFO_LOG(Log::sceNet, "%s(%d)", __FUNCTION__, handlerID);
+	// An ID that can't be a handler's (100, -1) and a free one give different errors
+	// (pspautotests net/inet/offline). Where the range ends is inferred from the handler limit.
+	if (handlerID >= MAX_APCTL_GAME_HANDLERS) {
+		return hleLogError(Log::sceNet, 0x80410A82, "bad handler id");
+	}
+	if (apctlHandlers.find(handlerID) == apctlHandlers.end()) {
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_INVALID_ID, "no such handler");
+	}
 	return NetApctl_DelHandler(handlerID);
 }
 
@@ -1548,8 +1592,8 @@ int sceNetApctlDisconnect() {
 
 	// Discards any pending events so we can disconnect immediately
 	apctlEvents.clear();
-	__UpdateApctlHandlers(netApctlState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST, 0);
-	// TODO: Blocks current thread and wait for a state change, but the state should probably need to be changed within 1 frame-time (~16ms) 
+	// The state stays as it is until the event, APCTL_DISCONNECT_DELAY_US later, sets it to DISCONNECTED.
+	__UpdateApctlHandlers(netApctlState, netApctlState, PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST, 0);
 	return hleLogInfo(Log::sceNet, 0);
 }
 
@@ -1562,17 +1606,20 @@ bool __NetApctlConnected() {
 }
 
 static int sceNetApctlGetState(u32 pStateAddr) {
-	//if (!netApctlInited) return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_NOT_IN_BSS, "apctl not in bss");
+	// PES 2009 only calls sceNetApctlInit when this fails. pspautotests net/adhoc/apctlinit
+	if (!g_netApctlInited) {
+		return hleLogWarning(Log::sceNet, SCE_NET_APCTL_ERROR_NOT_INITIALIZED, "not initialized");
+	}
 
 	// Valid Arguments
-	if (Memory::IsValidAddress(pStateAddr)) {
+	if (Memory::IsValid4AlignedAddress(pStateAddr)) {
 		// Return Thread Status
-		Memory::WriteOrException_U32(NetApctl_GetState(), pStateAddr);
+		Memory::WriteUnchecked_U32(NetApctl_GetState(), pStateAddr);
 		// Return Success
 		return hleLogDebug(Log::sceNet, 0);
 	}
 
-	return hleLogError(Log::sceNet, -1, "apctl invalid arg"); // 0x8002013A or ERROR_NET_WLAN_INVALID_ARG ?
+	return hleLogError(Log::sceNet, 0x80410A03, "apctl invalid arg"); // pspautotests net/inet/offline
 }
 
 // This one logs like a syscall because it's called at the end of some.
@@ -1598,14 +1645,18 @@ int NetApctl_GetBSSDescIDListUser(u32 sizeAddr, u32 bufAddr) {
 	const int userInfoSize = 8; // 8 bytes per entry (next address + entry id)
 	// Faking 4 entries, games like MGS:PW Recruit will need to have a different AP for each entry
 	int entries = 4;
-	if (!Memory::IsValid4AlignedAddress(sizeAddr) || !Memory::IsValidAddress(bufAddr))
-		return hleLogError(Log::sceNet, -1, "apctl invalid arg"); // 0x8002013A or ERROR_NET_WLAN_INVALID_ARG ?
+	// A NULL buffer asks for the size (pspautotests net/inet/offline).
+	if (!Memory::IsValid4AlignedAddress(sizeAddr) || (bufAddr != 0 && !Memory::IsValidAddress(bufAddr)))
+		return hleLogError(Log::sceNet, 0x80410A03, "apctl invalid arg");
 
 	int size = Memory::ReadUnchecked_U32(sizeAddr);
 	// Return size required
 	Memory::WriteUnchecked_U32(entries * userInfoSize, sizeAddr);
 
-	if (bufAddr != 0 && Memory::IsValidAddress(sizeAddr)) {
+	if (bufAddr != 0) {
+		// Only write entries that fit in valid memory.
+		if (size > 0)
+			size = (int)Memory::ClampValidSizeAt(bufAddr, size);
 		int offset = 0;
 		for (int i = 0; i < entries; i++) {
 			// Check if enough space available to write the next structure
@@ -1636,7 +1687,15 @@ static int sceNetApctlGetBSSDescIDListUser(u32 sizeAddr, u32 bufAddr) {
 }
 
 int NetApctl_GetBSSDescEntryUser(int entryId, int infoId, u32 resultAddr) {
-	if (!Memory::IsValidAddress(resultAddr))
+	u32 resultSize = 4;
+	switch (infoId) {
+	case PSP_NET_APCTL_DESC_IBSS: resultSize = ETHER_ADDR_LEN; break;
+	case PSP_NET_APCTL_DESC_SSID_NAME: resultSize = APCTL_SSID_MAXLEN; break;
+	case PSP_NET_APCTL_DESC_CHANNEL:
+	case PSP_NET_APCTL_DESC_SIGNAL_STRENGTH: resultSize = 1; break;
+	default: break;
+	}
+	if (!Memory::IsValidRange(resultAddr, resultSize))
 		return hleLogError(Log::sceNet, -1, "apctl invalid arg"); // 0x8002013A or ERROR_NET_WLAN_INVALID_ARG ?
 
 	// Generate an SSID name
@@ -1745,16 +1804,14 @@ static int sceNetApctlDelInternalHandler(u32 handlerID) {
 
 static int sceNetApctlAddInternal03Handler(u32 handlerPtr, u32 handlerArg) {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s(%08x, %08x)", __FUNCTION__, handlerPtr, handlerArg);
-	// This seems to be a 3rd kind of handler
-	// Simple forward, don't need to use hleCall
-	return sceNetApctlAddHandler(handlerPtr, handlerArg);
+	// This seems to be a 3rd kind of handler. The game handler limit doesn't apply.
+	return NetApctl_AddHandler(handlerPtr, handlerArg);
 }
 
 static int sceNetApctlDelInternal03Handler(u32 handlerID) {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s(%i)", __FUNCTION__, handlerID);
 	// This seems to be a 3rd kind of handler
-	// Simple forward, don't need to use hleCall
-	return sceNetApctlDelHandler(handlerID);
+	return NetApctl_DelHandler(handlerID);
 }
 
 static int sceNetApctl_lib2_69745F0A(int handlerId) {
@@ -1808,8 +1865,10 @@ static int sceNetUpnpGetNatInfo() {
 }
 
 static int sceNetGetDropRate(u32 dropRateAddr, u32 dropDurationAddr) {
-	Memory::WriteOrException_U32(netDropRate, dropRateAddr);
-	Memory::WriteOrException_U32(netDropDuration, dropDurationAddr);
+	if (Memory::IsValid4AlignedAddress(dropRateAddr))
+		Memory::WriteUnchecked_U32(netDropRate, dropRateAddr);
+	if (Memory::IsValid4AlignedAddress(dropDurationAddr))
+		Memory::WriteUnchecked_U32(netDropDuration, dropDurationAddr);
 	return hleLogInfo(Log::sceNet, 0);
 }
 

@@ -808,6 +808,9 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/proAdhoc.cpp \
   $(SRC)/Core/HLE/proAdhocServer.cpp \
   $(SRC)/Core/HLE/NetAdhocCommon.cpp \
+  $(SRC)/Core/HLE/AdhocTransportP2P.cpp \
+  $(SRC)/Core/HLE/AdhocTransportRelay.cpp \
+  $(SRC)/Core/HLE/AdhocTransportNetSim.cpp \
   $(SRC)/Core/HLE/sceNetAdhoc.cpp \
   $(SRC)/ext/aemu_postoffice/client/postoffice.c \
   $(SRC)/ext/aemu_postoffice/client/postoffice_mem_stdc.c \
@@ -819,6 +822,14 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/ext/aemu_postoffice/client/enet.c \
   $(SRC)/ext/aemu_postoffice/adhocctl/client/adhocctl.c \
   $(SRC)/ext/aemu_postoffice/adhocctl/client/adhocctl_mem.c \
+  $(SRC)/ext/aemu_postoffice/server_cpp/server.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/session.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/semaphore.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/log.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/common.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/enet.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/snapshot.cpp \
+  $(SRC)/ext/aemu_postoffice/server_cpp/native_socket_linux.cpp \
   $(SRC)/Core/HLE/sceNetAdhocMatching.cpp \
   $(SRC)/Core/HLE/sceNetApctl.cpp \
   $(SRC)/Core/HLE/sceNetInet.cpp \
@@ -1038,6 +1049,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/android/jni/AndroidAudio.cpp \
   $(SRC)/android/jni/AndroidEGLGraphicsContext.cpp \
   $(SRC)/android/jni/OboeContext.cpp \
+  $(SRC)/android/jni/PerformanceHint.cpp \
   $(SRC)/UI/ImDebugger/ImDebugger.cpp \
   $(SRC)/UI/ImDebugger/ImGe.cpp \
   $(SRC)/UI/ImDebugger/ImConsole.cpp \
@@ -1056,6 +1068,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/EmuScreen.cpp \
   $(SRC)/UI/ImposeHome.cpp \
   $(SRC)/UI/GameBrowser.cpp \
+  $(SRC)/UI/GameButton.cpp \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
   $(SRC)/UI/SettingsPage.cpp \

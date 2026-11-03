@@ -83,6 +83,26 @@ python test.py video/mp4/avchold video/mpeg/decodeend --graphics=software --mems
 CI has no firmware dump, so these tests stay in `tests_next`, and a change to the video path
 needs this run done by hand.
 
+### Multi-console ad hoc tests
+
+The tests in `tests/net/adhoc/pair` (one host program and one client program each, see
+[pspautotests-hardware.md](pspautotests-hardware.md#tests-that-need-two-psps)) need several emulators
+running at once. `test.py` hands them to `Tools/adhoc_multi.py`, which starts one PPSSPPHeadless per
+role with `--realtime` and `--instance=N` (its own 127.0.0.N address and MAC), the host with
+`--adhoc-server`, and compares each against its own `.expected`. Each test runs twice, once in each
+data mode: through the built-in server's relay (aemu_postoffice), and P2P, where the instances send to
+each other directly. A test that fails in only one mode goes in `pair_known_failures` for that mode.
+`--adhoc-mode=relay` or `--adhoc-mode=p2p` runs just one:
+
+```bash
+python3 test.py -g -m net/adhoc/pair --adhoc-mode=p2p
+python3 Tools/adhoc_multi.py [--relay] net/adhoc/pair/basic
+```
+
+In P2P mode instance N binds to 127.0.0.N. Linux and Windows route all of 127/8 to the loopback, but
+macOS needs the addresses added, after every reboot: `sudo ifconfig lo0 alias 127.0.0.2 up` (and .3, ...
+for tests with more clients). Without them the P2P run fails and prints that command.
+
 ### What you'll see
 
 **Passing test:**

@@ -89,9 +89,14 @@ static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, cons
 		// Otherwise (launching from a file association, a shortcut, drag-and-drop...) we have to block until
 		// it's available - we can't decide what to do below without it. HIGH, so we don't wait behind
 		// whatever else is queued, like a search's loads for every game in a big list.
-		const GameInfoFlags neededFlags = GameInfoFlags::FILE_TYPE | GameInfoFlags::PARAM_SFO;
-		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, path, neededFlags, nullptr, GameInfoFlags::EMPTY, TaskPriority::HIGH);
-		info->WaitUntilReady(neededFlags);
+		// Only the file type at first: just a few of the cases below need the PARAM.SFO, and reading
+		// it out of a disc image costs more disk access.
+		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::FILE_TYPE, nullptr, GameInfoFlags::EMPTY, TaskPriority::HIGH);
+		info->WaitUntilReady(GameInfoFlags::FILE_TYPE);
+		const auto waitForParamSFO = [&]() {
+			g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::PARAM_SFO, nullptr, GameInfoFlags::EMPTY, TaskPriority::HIGH);
+			info->WaitUntilReady(GameInfoFlags::PARAM_SFO);
+		};
 
 		switch (info->fileType) {
 		case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
@@ -138,6 +143,7 @@ static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, cons
 		case IdentifiedFileType::PSP_SAVEDATA_DIRECTORY:
 		{
 			// Show the savedata popup, why not?
+			waitForParamSFO();
 			std::string title = SanitizeString(info->GetTitle(), StringRestriction::NoLineBreaksOrSpecials, 0, 200);
 			screenManager->push(new SavedataPopupScreen(Path(), path, title));
 			return;
@@ -147,6 +153,7 @@ static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, cons
 		{
 			// Check if it's an update file. If so, we'll offer to install it directly,
 			// instead of running it (which currently will not work).
+			waitForParamSFO();
 			if (info->id == "MSTKUPDATE") {
 				std::string title = info->GetTitle();  // includes the version.
 				// The unpacker wants the PBP itself, not the folder it happens to sit in.
@@ -189,12 +196,23 @@ static bool IsTempPath(const Path &str) {
 	return false;
 }
 
+// Leaving a game creates a new MainScreen, which should come back on the tab the game was
+// launched from. The default tab setting is only for the first one after startup.
+static int g_lastMainScreenTab = -1;
+// Tab indices shift when the Recent tab isn't shown, so the saved tab only applies if this matches.
+static bool g_lastMainScreenHadRecent = false;
+
 MainScreen::MainScreen() {
 	g_BackgroundAudio.SetGame(Path());
 	packGeneration_ = GamePacker::Generation();
 }
 
 MainScreen::~MainScreen() {
+	// RemoteISOBrowseScreen derives from us, but with tabs of its own.
+	if (tabHolder_ && createdMainTabs_) {
+		g_lastMainScreenTab = tabHolder_->GetCurrentTab();
+		g_lastMainScreenHadRecent = recentTabShown_;
+	}
 	g_BackgroundAudio.SetGame(Path());
 }
 
@@ -445,6 +463,8 @@ void MainScreen::CreateViews() {
 	if (showRecent) {
 		CreateRecentTab();
 	}
+	recentTabShown_ = showRecent;
+	createdMainTabs_ = true;
 
 	Button *focusButton = nullptr;
 	if (hasStorageAccess) {
@@ -457,7 +477,9 @@ void MainScreen::CreateViews() {
 			remoteBrowser->SetHomePath(remotePath);
 		}
 
-		if (g_recentFiles.HasAny()) {
+		if (g_lastMainScreenTab >= 0 && g_lastMainScreenHadRecent == showRecent) {
+			tabHolder_->SetCurrentTab(g_lastMainScreenTab, true);
+		} else if (g_recentFiles.HasAny()) {
 			tabHolder_->SetCurrentTab(std::clamp(g_Config.iDefaultTab, 0, g_Config.bRemoteTab ? 3 : 2), true);
 		} else if (g_Config.iMaxRecent > 0) {
 			tabHolder_->SetCurrentTab(1, true);	

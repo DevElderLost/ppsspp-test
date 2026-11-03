@@ -118,6 +118,8 @@
 #include "Core/FileSystems/FileSystem.h"
 #include "Core/FileSystems/ISOFileSystem.h"
 #include "Core/FileSystems/DirectoryFileSystem.h"
+#include "Core/FileSystems/MetaFileSystem.h"
+#include "Core/SaveState.h"
 #include "Core/HLE/sceUmd.h"
 #include "Core/Loaders.h"
 #include "Core/MemMap.h"
@@ -136,7 +138,6 @@
 
 #include "Common/File/AndroidContentURI.h"
 #include "Common/System/Request.h"
-#include "Common/Render/AtlasGen.h"
 #include "Common/Render/Text/draw_text.h"
 #include "Common/Net/Resolve.h"
 
@@ -239,6 +240,105 @@ bool TestMathUtil() {
 	volatile float zero = 0.0f;
 	EXPECT_TRUE(my_isinf(1.0f/zero));
 	EXPECT_FALSE(my_isnan(1.0f/zero));
+	return true;
+}
+
+// A filesystem whose state is one number, under a section name of our choosing.
+class SaveStateTestFileSystem : public EmptyFileSystem {
+public:
+	SaveStateTestFileSystem(const char *section, int value) : section_(section), value_(value) {}
+	void DoState(PointerWrap &p) override {
+		auto s = p.Section(section_, 1);
+		if (!s)
+			return;
+		Do(p, value_);
+	}
+	int Value() const { return value_; }
+
+private:
+	const char *section_;
+	int value_;
+};
+
+bool TestSaveStateMounts() {
+	auto a = std::make_shared<SaveStateTestFileSystem>("TestFS", 1);
+	auto b = std::make_shared<SaveStateTestFileSystem>("TestFS", 2);
+	auto c = std::make_shared<SaveStateTestFileSystem>("TestFS", 3);
+	MetaFileSystem saved;
+	saved.Mount("a:", a);
+	saved.Mount("b:", b);
+	saved.Mount("c:", c);
+
+	std::vector<u8> data;
+	EXPECT_TRUE(CChunkFileReader::MeasureAndSavePtr(saved, &data) == CChunkFileReader::ERROR_NONE);
+
+	// Reordered, without b: and with a d: the state doesn't have.
+	auto a2 = std::make_shared<SaveStateTestFileSystem>("TestFS", 0);
+	auto c2 = std::make_shared<SaveStateTestFileSystem>("TestFS", 0);
+	auto d2 = std::make_shared<SaveStateTestFileSystem>("TestFS", 40);
+	MetaFileSystem loaded;
+	loaded.Mount("c:", c2);
+	loaded.Mount("d:", d2);
+	loaded.Mount("a:", a2);
+	std::string error;
+	EXPECT_TRUE(CChunkFileReader::LoadPtr(data.data(), data.size(), loaded, &error) == CChunkFileReader::ERROR_NONE);
+	EXPECT_EQ_INT(a2->Value(), 1);
+	EXPECT_EQ_INT(c2->Value(), 3);
+	EXPECT_EQ_INT(d2->Value(), 40);
+
+	// A mount whose filesystem doesn't match the state's fails the load.
+	MetaFileSystem mismatched;
+	mismatched.Mount("a:", std::make_shared<SaveStateTestFileSystem>("OtherFS", 0));
+	EXPECT_TRUE(CChunkFileReader::LoadPtr(data.data(), data.size(), mismatched, &error) != CChunkFileReader::ERROR_NONE);
+
+	return true;
+}
+
+// The start of a state as SaveStart writes it, and a little more.
+struct PeekTestState {
+	int version;
+	void DoState(PointerWrap &p) {
+		auto s = p.Section("SaveStart", 1, version);
+		if (!s)
+			return;
+		if (s >= 6) {
+			char discID[16] = "ULUS12345";
+			char discVersion[8] = "1.01";
+			u8 bootType = (u8)SaveState::BootType::PBP;
+			p.DoVoid(discID, sizeof(discID));
+			p.DoVoid(discVersion, sizeof(discVersion));
+			Do(p, bootType);
+		}
+		std::vector<u8> rest(100000, 0x55);
+		Do(p, rest);
+	}
+};
+
+static bool SavePeekTestState(const Path &path, int version) {
+	PeekTestState state{ version };
+	u8 *data = nullptr;
+	size_t size = 0;
+	if (CChunkFileReader::MeasureAndSavePtr(state, &data, &size) != CChunkFileReader::ERROR_NONE) {
+		return false;
+	}
+	return CChunkFileReader::SaveFile(path, "Test", "v1.0", data, size) == CChunkFileReader::ERROR_NONE;
+}
+
+bool TestSaveStatePeek() {
+	const Path path = UnitTestTempPath("unittest_peek.ppst");
+	SaveState::BootInfo info;
+	std::string error;
+
+	EXPECT_TRUE(SavePeekTestState(path, 6));
+	EXPECT_TRUE(SaveState::PeekBootInfo(path, &info, &error));
+	EXPECT_EQ_STR(info.discID, std::string("ULUS12345"));
+	EXPECT_EQ_STR(info.discVersion, std::string("1.01"));
+	EXPECT_TRUE(info.bootType == SaveState::BootType::PBP);
+
+	EXPECT_TRUE(SavePeekTestState(path, 5));
+	EXPECT_FALSE(SaveState::PeekBootInfo(path, &info, &error));
+
+	File::Delete(path);
 	return true;
 }
 
@@ -3296,6 +3396,19 @@ bool TestConfigSettings() {
 	EXPECT_EQ_FLOAT(Config::GetDefaultValueFloat(&g_Config.displayLayoutLandscape.fDisplayOffsetY), 0.5f);
 	EXPECT_EQ_FLOAT(Config::GetDefaultValueFloat(&g_Config.displayLayoutPortrait.fDisplayOffsetY), 0.25f);
 	EXPECT_EQ_INT(Config::GetDefaultValueInt(&g_Config.gestureControls[1].iSwipeUp), 0);
+
+	int oldVolume = g_Config.iUIVolume;
+	g_Config.iUIVolume = 10;
+	EXPECT_TRUE(Config::RestoreSettingToDefault(&g_Config.iUIVolume));
+	EXPECT_EQ_INT(g_Config.iUIVolume, 75);
+	EXPECT_FALSE(Config::RestoreSettingToDefault(&g_Config.iUIVolume));
+	g_Config.iUIVolume = oldVolume;
+
+	float oldOffsetY = g_Config.displayLayoutPortrait.fDisplayOffsetY;
+	g_Config.displayLayoutPortrait.fDisplayOffsetY = 0.9f;
+	EXPECT_TRUE(Config::RestoreSettingToDefault(&g_Config.displayLayoutPortrait.fDisplayOffsetY));
+	EXPECT_EQ_FLOAT(g_Config.displayLayoutPortrait.fDisplayOffsetY, 0.25f);
+	g_Config.displayLayoutPortrait.fDisplayOffsetY = oldOffsetY;
 	return true;
 }
 
@@ -3744,8 +3857,6 @@ bool TestFatShortNames() {
 class FakeTextDrawer : public TextDrawer {
 public:
 	FakeTextDrawer() : TextDrawer(nullptr) {}
-	void SetOrCreateFont(const FontStyle &style) override { fontStyle_ = style; }
-	bool DrawStringBitmap(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, std::string_view str, int align, bool fullColor) override { return false; }
 
 	void TestDropShadow(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat srcFormat) {
 		AddDropShadow(bitmapData, entry, srcFormat);
@@ -3754,7 +3865,9 @@ public:
 	int measureCalls = 0;
 
 protected:
-	void MeasureStringInternal(std::string_view str, float *w, float *h) override {
+	void EnsureFont(const FontStyle &style) override {}
+	bool DrawStringBitmap(const FontStyle &style, std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, std::string_view str, int align, bool fullColor) override { return false; }
+	void MeasureStringInternal(const FontStyle &style, std::string_view str, float *w, float *h) override {
 		measureCalls++;
 		std::vector<std::string_view> lines;
 		SplitString(str, '\n', lines);
@@ -3772,39 +3885,40 @@ protected:
 bool TestTextDrawerCache() {
 	FakeTextDrawer drawer;
 	drawer.SetForcedDPIScale(1.0f);
-	drawer.SetOrCreateFont(FontStyle(FontFamily::SansSerif, 20, FontStyleFlags::Default));
+	const FontStyle font20(FontFamily::SansSerif, 20, FontStyleFlags::Default);
+	const FontStyle font30(FontFamily::SansSerif, 30, FontStyleFlags::Default);
 
 	float w, h;
-	drawer.MeasureString("hello", &w, &h);
+	drawer.MeasureString(font20, 1.0f, 1.0f, "hello", &w, &h);
 	EXPECT_EQ_FLOAT(w, 50.0f);
 	EXPECT_EQ_FLOAT(h, 20.0f);
-	drawer.MeasureString("hello", &w, &h);
+	drawer.MeasureString(font20, 1.0f, 1.0f, "hello", &w, &h);
 	EXPECT_EQ_INT(drawer.measureCalls, 1);
 
-	// A different style is a different cache entry.
-	drawer.SetOrCreateFont(FontStyle(FontFamily::SansSerif, 30, FontStyleFlags::Default));
-	drawer.MeasureString("hello", &w, &h);
+	// A different style is a different cache entry, but a different scale isn't.
+	drawer.MeasureString(font30, 1.0f, 1.0f, "hello", &w, &h);
+	EXPECT_EQ_INT(drawer.measureCalls, 2);
+	drawer.MeasureString(font30, 2.0f, 2.0f, "hello", &w, &h);
+	EXPECT_EQ_FLOAT(w, 100.0f);
 	EXPECT_EQ_INT(drawer.measureCalls, 2);
 
 	const std::string_view para = "The quick brown fox jumps over the lazy dog, and then it does it again, and again, until the dog finally gets up and leaves.";
-	drawer.MeasureStringRect(para, 200.0f, &w, &h, FLAG_WRAP_TEXT);
+	drawer.MeasureStringRect(font30, 1.0f, 1.0f, para, 200.0f, &w, &h, FLAG_WRAP_TEXT);
 	// The trailing space of a wrapped line is measured too.
 	EXPECT_TRUE(w <= 210.0f);
 	EXPECT_TRUE(h > 20.0f);
 	float w2, h2;
 	int callsBefore = drawer.measureCalls;
-	drawer.MeasureStringRect(para, 200.0f, &w2, &h2, FLAG_WRAP_TEXT);
+	drawer.MeasureStringRect(font30, 1.0f, 1.0f, para, 200.0f, &w2, &h2, FLAG_WRAP_TEXT);
 	EXPECT_EQ_FLOAT(w, w2);
 	EXPECT_EQ_FLOAT(h, h2);
 	EXPECT_EQ_INT(drawer.measureCalls, callsBefore);
 
 	// Scaling the font changes where the text wraps.
-	drawer.SetFontScale(0.5f, 0.5f);
-	drawer.MeasureStringRect(para, 200.0f, &w2, &h2, FLAG_WRAP_TEXT);
+	drawer.MeasureStringRect(font30, 0.5f, 0.5f, para, 200.0f, &w2, &h2, FLAG_WRAP_TEXT);
 	EXPECT_TRUE(h2 < h * 0.5f);
-	drawer.SetFontScale(1.0f, 1.0f);
 
-	drawer.MeasureStringRect(para, 200.0f, &w, &h, FLAG_ELLIPSIZE_TEXT);
+	drawer.MeasureStringRect(font30, 1.0f, 1.0f, para, 200.0f, &w, &h, FLAG_ELLIPSIZE_TEXT);
 	EXPECT_EQ_FLOAT(h, 20.0f);
 	EXPECT_TRUE(w <= 200.0f);
 
@@ -3818,7 +3932,6 @@ bool TestTextDrawerCache() {
 		}
 		drawer.TestDropShadow(bitmap, entry, Draw::DataFormat::R8_UNORM);
 	};
-	drawer.SetOrCreateFont(FontStyle(FontFamily::SansSerif, 24, FontStyleFlags::Default));
 	TextStringEntry entry1(0), entry2(0);
 	std::vector<uint8_t> bitmap;
 	shadowTest(1.0f, entry1, bitmap);
@@ -3837,32 +3950,6 @@ bool TestTextDrawerCache() {
 	// Higher DPI means more pixels per UI unit, so a bigger blur in pixels.
 	shadowTest(0.5f, entry2, bitmap);
 	EXPECT_TRUE(entry2.shadowPad > pad);
-	return true;
-}
-
-// The UI shadow has no offset, so it pads the image evenly and stays symmetric around it.
-bool TestAtlasDropShadow() {
-	Image img;
-	img.scale = 2.0f;
-	img.resize(8, 8);
-	for (int y = 2; y < 6; y++) {
-		for (int x = 2; x < 6; x++) {
-			img.set1(x, y, 0xFFFFFFFF);
-		}
-	}
-	AddDropShadow(img, UIDropShadowParams(img.scale));
-	EXPECT_EQ_INT(img.w, 8 + 12);
-	EXPECT_EQ_INT(img.h, 8 + 12);
-	EXPECT_EQ_HEX(img.get1(6 + 3, 6 + 3), 0xFFFFFFFF);
-	EXPECT_EQ_HEX(img.get1(0, 0), 0);
-	for (int y = 0; y < img.h; y++) {
-		for (int x = 0; x < img.w; x++) {
-			EXPECT_EQ_HEX(img.get1(x, y), img.get1(img.w - 1 - x, img.h - 1 - y));
-		}
-	}
-	const u32 edge = img.get1(5, 10);
-	EXPECT_EQ_INT(edge & 0xFFFFFF, 0);
-	EXPECT_TRUE((edge >> 24) > 0 && (edge >> 24) < 0xA8);
 	return true;
 }
 
@@ -4183,7 +4270,6 @@ TestItem availableTests[] = {
 	TEST_ITEM(UITabOrder),
 	TEST_ITEM(UIFocusNavigation),
 	TEST_ITEM(TextDrawerCache),
-	TEST_ITEM(AtlasDropShadow),
 	TEST_ITEM(FatShortNames),
 	TEST_ITEM(GEDumpGameID),
 	TEST_ITEM(UmdDiscType),
@@ -4191,6 +4277,8 @@ TestItem availableTests[] = {
 	TEST_ITEM(RequestManager),
 	TEST_ITEM(StackWalk),
 	TEST_ITEM(InetPton),
+	TEST_ITEM(SaveStateMounts),
+	TEST_ITEM(SaveStatePeek),
 };
 
 int main(int argc, const char *argv[]) {

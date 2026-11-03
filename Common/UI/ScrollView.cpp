@@ -298,7 +298,7 @@ void ScrollView::Draw(UIContext &dc) {
 	}
 
 	dc.PushScissor(bounds_);
-	dc.FillRect(bg_, bounds_);
+	dc.FillRoundRect(bg_, bounds_, dc.GetTheme().choiceRoundRadius, GetRoundCorners());
 
 	// For debugging layout issues, this can be useful.
 	// dc.FillRect(Drawable(0x60FF00FF), bounds_);
@@ -663,6 +663,7 @@ void ListView::CreateAllItems() {
 			OnItemCallback(i, e);
 		});
 	}
+	linLayout_->ApplyRoundCorners();
 }
 
 void ListView::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) {

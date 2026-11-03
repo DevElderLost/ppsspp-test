@@ -734,11 +734,12 @@ void PopupHeader::Draw(UIContext &dc) {
 	}
 
 	// Header background
-	dc.FillRect(dc.GetTheme().popupTitleStyle.background, bounds_);
+	dc.FillRoundRect(dc.GetTheme().popupTitleStyle.background, bounds_, dc.GetTheme().choiceRoundRadius, roundCorners_);
 	// Header title text
 	dc.DrawText(text_, bounds_.x + tx, bounds_.centerY(), dc.GetTheme().popupTitleStyle.fgColor, ALIGN_LEFT | ALIGN_VCENTER);
-	// Underline
-	dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2()-2, bounds_.x2(), bounds_.y2(), dc.GetTheme().popupTitleStyle.fgColor);
+
+	// Underline. Skipping it with the new style.
+	// dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2()-2, bounds_.x2(), bounds_.y2(), dc.GetTheme().popupTitleStyle.fgColor);
 
 	if (availableWidth < tw) {
 		dc.PopScissor();
@@ -1136,7 +1137,7 @@ void TextView::GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz
 }
 
 TextView *TextView::SetWordWrap() {
-	textAlign_ |= FLAG_WRAP_TEXT; return this;
+	textAlign_ = (TextFlags)((u32)textAlign_ | FLAG_WRAP_TEXT); return this;
 }
 
 void TextView::Draw(UIContext &dc) {
@@ -1162,6 +1163,9 @@ void TextView::Draw(UIContext &dc) {
 		style.background.color &= 0x7fffffff;
 		dc.FillRect(style.background, bounds_);
 	}
+	if (frame_) {
+		dc.Draw()->DrawRoundRect(bounds_, dc.GetTheme().choiceRoundRadius, textColor, RoundRectStyle::OutlineThin);
+	}
 
 	const FontStyle *style = GetTextStyle(dc, textSize_);
 	dc.SetFontStyle(*style);
@@ -1181,11 +1185,16 @@ void TextView::Draw(UIContext &dc) {
 
 	textBounds = textBounds.Inset(pad_.left, pad_.top, pad_.right, pad_.bottom);
 
-	if (shadow_) {
+	int textFlags = textAlign_;
+	if (shadow_ && !(textAlign_ & FLAG_DYNAMIC_ASCII)) {
+		textFlags |= FLAG_DROP_SHADOW;
+	} else if (shadow_) {
+		// Old-fashioned double-draw shadow.
 		uint32_t shadowColor = 0x80000000;
-		dc.DrawTextRect(text_, textBounds.Offset(1.0f, 1.0f), shadowColor, textAlign_);
+		dc.DrawTextRect(text_, textBounds.Offset(1.0f, 1.0f), shadowColor, textFlags);
 	}
-	dc.DrawTextRect(text_, textBounds, textColor, textAlign_);
+
+	dc.DrawTextRect(text_, textBounds, textColor, textFlags);
 	if (textSize_ != TextSize::Normal) {
 		// If we changed font style, reset it.
 		dc.SetFontStyle(dc.GetTheme().uiFont);
@@ -1282,7 +1291,7 @@ void TextEdit::Draw(UIContext &dc) {
 	dc.SetFontStyle(dc.GetTheme().uiFont);
 
 	// TODO: make background themeable?
-	dc.FillRect(HasFocus() ? UI::Drawable(0x80000000) : UI::Drawable(0x30000000), bounds_);
+	dc.FillRoundRect(HasFocus() ? UI::Drawable(0x80000000) : UI::Drawable(0x30000000), bounds_, dc.GetTheme().choiceRoundRadius * 0.5f);
 	dc.PushScissor(textBounds);
 	Bounds origTextBounds = textBounds;
 	uint32_t textColor = popupStyle_ ? dc.GetTheme().popupStyle.fgColor : dc.GetTheme().infoStyle.fgColor;
