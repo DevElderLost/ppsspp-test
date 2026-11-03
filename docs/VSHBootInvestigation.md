@@ -63,6 +63,10 @@ Two separate things:
   and the Spider-Man 2 trailer on the EUR Video Demo Disc play with sound. What that player needed
   from our Media Engine HLE (per-picture SEI records, keyframe flags, field conversion in
   `sceMpegBaseCscAvc`) is in pspautotests `video/mpeg/avcdetail` and `video/mpeg/cscavc`.
+  Interlaced discs (Family Guy and The Dark Knight are coded as separate field pictures, bottom
+  field first) are shown a field per vsync. The player takes the field order from the two SEI
+  records of each picture, one per field, so a field pair has to come with both (see
+  `PublishPictureInfo()`).
 
   Booting a UMD Video disc (from the game list, the command line or anywhere else) boots the XMB
   with the disc in the drive and UMD auto-start forced on (`CoreParameter::umdAutoboot`), so it
@@ -90,6 +94,13 @@ Two separate things:
 - **Photo**: folders under `PICTURE/` list with thumbnails, and JPEG and PNG open full screen (R
   for the next one).
 - **Music**: MP3 plays. SensMe stops at 8002013A.
+- **Video**: the memory stick list is read from `ms0:/VIDEO` and `ms0:/MP_ROOT`, not `PSP/VIDEO`.
+  H.264/AAC MP4 and Motion JPEG AVI (PCM or u-law audio) play. The player boots the ME in mode 3
+  (`sceMeBootStart`), which is what lets AAC Init take the flags it sets; renders Motion JPEG
+  through `sceMpegBaseYCrCbCopyVme`/`sceMpegBaseCscVme`; and plays audio through a vaudio channel
+  that hands each buffer to the ME (`sceVaudio_E8E78DC8`, then `sceVaudio_504E4745` many times a
+  second). Its Motion JPEG thumbnails replace the frame's Huffman tables with the standard ones, so
+  a file encoded with optimised tables (ffmpeg's default) gets a garbled thumbnail.
 - **Settings**: the menus open. System Information shows "-" for the MAC address: wlan.prx reads it
   from IdStorage key 0x44, and IdStorage is left failing on purpose (see below).
 - **Network**: the browser and the online manuals reach their Network Connection screen once

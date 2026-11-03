@@ -921,16 +921,6 @@ template<auto func> void WrapI_ICI(MIPSState *mips) {
 	RETURN(retval);
 }
 
-template<auto func> void WrapI_IVVVVUI(MIPSState *mips) {
-  u32 retval = HLECall<int(int, void *, void *, void *, void *, u32, int), func>(mips, PARAM(0), Memory::GetPointerWriteOrException(PARAM(1)), Memory::GetPointerWriteOrException(PARAM(2)), Memory::GetPointerWriteOrException(PARAM(3)), Memory::GetPointerWriteOrException(PARAM(4)), PARAM(5), PARAM(6) );
-  RETURN(retval);
-}
-
-template<auto func> void WrapI_ICUVIII(MIPSState *mips) {
-  u32 retval = HLECall<int(int, const char *, u32, void *, int, int, int), func>(mips, PARAM(0), Memory::GetCharPointer(PARAM(1)), PARAM(2), Memory::GetPointerWriteOrException(PARAM(3)), PARAM(4), PARAM(5), PARAM(6));
-  RETURN(retval);
-}
-
 template<auto func> void WrapI_VUI(MIPSState *mips) {
 	u32 retval = HLECall<int(void *, u32, int), func>(mips, Memory::GetPointerWriteOrException(PARAM(0)), PARAM(1), PARAM(2));
 	RETURN(retval);

@@ -6,14 +6,26 @@
 #include <oboe/Oboe.h>
 
 #include "Common/Log.h"
+#include "Common/System/System.h"
+#include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "android/jni/OboeContext.h"
 
 // Owns the streams. Held by shared_ptr since after a disconnect, Oboe calls the error
 // callback on a thread of its own that can outlive the OboeContext.
 class OboeContext::Streams : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback, public std::enable_shared_from_this<OboeContext::Streams> {
 public:
-	Streams(AndroidAudioCallback cb, int framesPerBuffer, int sampleRate)
-		: audioCallback_(cb), framesPerBuffer_(framesPerBuffer), sampleRate_(sampleRate) {}
+	Streams(AndroidAudioCallback cb, int sampleRate)
+		: audioCallback_(cb), sampleRate_(sampleRate) {
+		// The setting isn't offered before Android 8.1, where AAudio isn't stable.
+		if (g_Config.iAndroidAudioApi == (int)AndroidAudioApi::AAUDIO && oboe::AudioStreamBuilder::isAAudioRecommended()) {
+			audioApi_ = oboe::AudioApi::AAudio;
+		}
+		// Global in Oboe, and only read when an AAudio stream is opened. Never enable it beyond what
+		// the device's aaudio.mmap_policy allows: setMMapEnabled(true) forces the policy to AUTO, and
+		// a Xiaomi Pad 5 Pro (Android 13) got stuck on a blank screen at launch after we started doing that.
+		oboe::OboeExtensions::setMMapEnabled(g_Config.bAndroidAudioMMap && oboe::OboeExtensions::isMMapSupported());
+	}
 
 	bool StartOutput() {
 		std::lock_guard<std::mutex> guard(mutex_);
@@ -37,12 +49,16 @@ public:
 	void Shutdown() {
 		std::lock_guard<std::mutex> guard(mutex_);
 		shutdown_ = true;
-		CloseStream(output_);
+		CloseOutput();
 		CloseStream(input_);
 	}
 
 	oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) override {
 		if (stream->getDirection() == oboe::Direction::Output) {
+			// Grows the buffer a burst at a time when we underrun.
+			if (outputTuner_) {
+				outputTuner_->tune();
+			}
 			audioCallback_((short *)audioData, numFrames, stream->getSampleRate(), nullptr);
 		} else {
 			// This is the audio thread, so just buffer it. The CPU thread picks it up.
@@ -65,6 +81,7 @@ public:
 		}
 		WARN_LOG(Log::Audio, "Oboe: %s stream closed with error: %s", isOutput ? "output" : "input", oboe::convertToText(error));
 		if (isOutput) {
+			outputTuner_.reset();
 			output_.reset();
 		} else {
 			input_.reset();
@@ -85,6 +102,7 @@ private:
 	bool OpenOutput() {
 		oboe::AudioStreamBuilder builder;
 		builder.setDirection(oboe::Direction::Output)
+			->setAudioApi(audioApi_)
 			->setPerformanceMode(oboe::PerformanceMode::LowLatency)
 			->setSharingMode(oboe::SharingMode::Shared)
 			->setUsage(oboe::Usage::Game)
@@ -94,7 +112,9 @@ private:
 			->setChannelConversionAllowed(true)
 			->setSampleRate(sampleRate_)
 			->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium)
-			->setFramesPerDataCallback(framesPerBuffer_)
+			// No setFramesPerDataCallback: NativeMix takes any size, and forcing one makes Oboe add a
+			// block adapter, which holds back an extra buffer when it doesn't match the burst (MMAP
+			// streams often have a smaller burst than PROPERTY_OUTPUT_FRAMES_PER_BUFFER).
 			->setDataCallback(this)
 			->setErrorCallback(shared_from_this());
 		oboe::Result result = builder.openStream(output_);
@@ -102,23 +122,29 @@ private:
 			output_.reset();
 			return Fail("Failed to open output stream", result);
 		}
-		// Double buffering, the same latency as the old OpenSL path.
-		output_->setBufferSizeInFrames(output_->getFramesPerBurst() * 2);
+		// Starts at two bursts.
+		outputTuner_ = std::make_unique<oboe::LatencyTuner>(*output_);
 		result = output_->requestStart();
 		if (result != oboe::Result::OK) {
-			CloseStream(output_);
+			CloseOutput();
 			return Fail("Failed to start output stream", result);
 		}
-		INFO_LOG(Log::Audio, "Oboe: Output stream open: %s, %d Hz, %d frames per burst, buffer %d frames, %s, %s",
+		char info[256];
+		snprintf(info, sizeof(info), "%s%s, %d Hz, burst %d, buffer %d, %s, device %d",
 			oboe::convertToText(output_->getAudioApi()),
+			// Only ask AAudio. An OpenSL ES stream has no AAudio stream underneath.
+			output_->getAudioApi() == oboe::AudioApi::AAudio && oboe::OboeExtensions::isMMapUsed(output_.get()) ? " (MMAP)" : "",
 			output_->getSampleRate(), output_->getFramesPerBurst(), output_->getBufferSizeInFrames(),
-			oboe::convertToText(output_->getPerformanceMode()), oboe::convertToText(output_->getSharingMode()));
+			oboe::convertToText(output_->getPerformanceMode()), output_->getDeviceId());
+		INFO_LOG(Log::Audio, "Oboe: Output stream open: %s", info);
+		OboeContext::SetInfoString(info);
 		return true;
 	}
 
 	bool OpenInput() {
 		oboe::AudioStreamBuilder builder;
 		builder.setDirection(oboe::Direction::Input)
+			->setAudioApi(audioApi_)
 			->setSharingMode(oboe::SharingMode::Shared)
 			->setFormat(oboe::AudioFormat::I16)
 			->setFormatConversionAllowed(true)
@@ -142,6 +168,16 @@ private:
 		return true;
 	}
 
+	void CloseOutput() {
+		if (output_) {
+			oboe::ResultWithValue<int32_t> xruns = output_->getXRunCount();
+			INFO_LOG(Log::Audio, "Oboe: Closing output stream, buffer %d, underruns %d", output_->getBufferSizeInFrames(), xruns ? xruns.value() : -1);
+		}
+		// Stopped first, so the callback is done with the tuner.
+		CloseStream(output_);
+		outputTuner_.reset();
+	}
+
 	static void CloseStream(std::shared_ptr<oboe::AudioStream> &stream) {
 		if (stream) {
 			stream->stop();
@@ -157,12 +193,14 @@ private:
 	}
 
 	AndroidAudioCallback audioCallback_;
-	int framesPerBuffer_;
 	int sampleRate_;
+	oboe::AudioApi audioApi_ = oboe::AudioApi::OpenSLES;
 
 	std::mutex mutex_;
 	bool shutdown_ = false;
 	std::shared_ptr<oboe::AudioStream> output_;
+	// Only touched by the audio callback while output_ is running.
+	std::unique_ptr<oboe::LatencyTuner> outputTuner_;
 	std::shared_ptr<oboe::AudioStream> input_;
 	int inputSampleRate_ = 0;
 };
@@ -172,7 +210,7 @@ OboeContext::OboeContext(AndroidAudioCallback cb, int _FramesPerBuffer, int _Sam
 	// Only used by the OpenSL ES fallback, which can't query the device's native values itself.
 	oboe::DefaultStreamValues::SampleRate = sampleRate;
 	oboe::DefaultStreamValues::FramesPerBurst = framesPerBuffer;
-	streams_ = std::make_shared<Streams>(cb, framesPerBuffer, sampleRate);
+	streams_ = std::make_shared<Streams>(cb, sampleRate);
 }
 
 bool OboeContext::Init() {

@@ -2618,6 +2618,29 @@ bool __KernelLoadGEDump(MIPSState *mips, std::string_view base_filename, std::st
 	return true;
 }
 
+void __KernelLoadStateBootStub(MIPSState *mips) {
+	__KernelLoadReset();
+
+	constexpr u32 codeStartAddr = PSP_GetUserMemoryBase();
+	mips->pc = codeStartAddr;
+	// b . (to itself), and the delay slot.
+	Memory::WriteUnchecked_U32(MIPS_MAKE_B(-1), codeStartAddr);
+	Memory::WriteUnchecked_U32(MIPS_MAKE_NOP(), codeStartAddr + 4);
+
+	PSPModule *module = new PSPModule();
+	kernelObjects.Create(module);
+	loadedModules.insert(module->GetUID());
+	memset(&module->nm, 0, sizeof(module->nm));
+	module->isFake = true;
+	module->nm.entry_addr = codeStartAddr;
+	module->nm.gp_value = -1;
+
+	SceUID threadID = __KernelSetupRootThread(module->GetUID(), 0, nullptr, 0x20, 0x1000, 0);
+	__KernelSetThreadRA(threadID, NID_MODULERETURN);
+
+	__KernelStartIdleThreads(module->GetUID());
+}
+
 int __KernelGPUReplay(MIPSState *mips) {
 	// Special ABI: s0 and s1 are the "args".  Not null terminated.
 	const char *filenamep = Memory::GetCharPointer(mips->r[MIPS_REG_S1]);
@@ -2760,6 +2783,44 @@ static std::vector<u8> VshmainReturnArgs(const std::vector<u8> &launchArgs) {
 		memcpy(args.data(), header, sizeof(header));
 	}
 	return args;
+}
+
+// For a game the XMB booted, or loaded in place under its own session: the boot that takes it back
+// to the XMB. False otherwise (or for the XMB itself, or the PS1 emulator, which has its own HOME menu
+// with its own way out).
+static bool GetExitToVSHRequest(BootRequest *request) {
+	if (g_runningVSH || PopsBootActive()) {
+		return false;
+	}
+	const std::optional<VSHLaunch> &launchedFromVSH = PSP_CoreParameter().launchedFromVSH;
+	if (launchedFromVSH) {
+		request->fileToStart = launchedFromVSH->vshmain;
+		request->vshmainArgs = VshmainReturnArgs(launchedFromVSH->vshmainArgs);
+	} else if (PSP_CoreParameter().fileToStart.GetFilename() == "vshmain.prx") {
+		// Loaded in place: the XMB's own boot file is what we started from.
+		request->fileToStart = PSP_CoreParameter().fileToStart;
+		request->vshmainArgs = VshmainReturnArgs(g_vshmainArgs);
+	} else {
+		return false;
+	}
+	request->mountIso = __UmdGetPath();
+	return true;
+}
+
+bool __KernelCanExitToVSH() {
+	BootRequest request;
+	return GetExitToVSHRequest(&request);
+}
+
+bool __KernelRequestExitToVSH() {
+	BootRequest request;
+	if (!GetExitToVSHRequest(&request)) {
+		return false;
+	}
+	INFO_LOG(Log::sceModule, "Quitting the game: back to the XMB");
+	// Stops the core; the frontend then boots the XMB like anything else.
+	PSP_RequestBoot(request);
+	return true;
 }
 
 bool __KernelExitToVSH(MIPSState *mips) {
@@ -3800,14 +3861,21 @@ static u32 sceKernelQueryModuleInfo(u32 uid, u32 infoAddr)
 
 static u32 sceKernelGetModuleIdList(u32 resultBuffer, u32 resultBufferSize, u32 idCountAddr)
 {
-	ERROR_LOG(Log::sceModule, "UNTESTED sceKernelGetModuleIdList(%08x, %i, %08x)", resultBuffer, resultBufferSize, idCountAddr);
-	
+	// pspautotests modules/idlist: the size is in bytes, a partial entry at the end still gets
+	// written, and the count covers every module whether it fit or not.
+	if (resultBuffer == 0 || (int)resultBufferSize < 0) {
+		return hleLogError(Log::sceModule, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "bad buffer");
+	}
+
 	int idCount = 0;
 	u32 resultBufferOffset = 0;
 
 	u32 error;
 	for (SceUID moduleId : loadedModules) {
 		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module) {
+			continue;
+		}
 		if (!module->isFake || liedAboutThisModule(module)) {
 			if (resultBufferOffset < resultBufferSize) {
 				Memory::WriteOrException_U32(module->GetUID(), resultBuffer + resultBufferOffset);
@@ -3818,8 +3886,7 @@ static u32 sceKernelGetModuleIdList(u32 resultBuffer, u32 resultBufferSize, u32 
 	}
 
 	Memory::WriteOrException_U32(idCount, idCountAddr);
-	
-	return hleNoLog(0);
+	return hleLogDebug(Log::sceModule, 0);
 }
 
 bool DescribeModuleAddress(u32 address, char *buffer, size_t bufferSize) {

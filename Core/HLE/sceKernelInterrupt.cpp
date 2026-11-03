@@ -152,6 +152,11 @@ bool IntrHandler::run(PendingInterrupt& pend)
 		WARN_LOG(Log::sceIntc, "Ignoring interrupt, already been released.");
 		return false;
 	}
+	// Disabled by a handler that ran before it, for the same interrupt (intr/disablepending).
+	if (!handler->enabled || handler->handlerAddress == 0) {
+		DEBUG_LOG(Log::sceIntc, "Ignoring interrupt, sub-interrupt %d was disabled", pend.subintr);
+		return false;
+	}
 
 	copyArgsToCPU(pend);
 
@@ -571,7 +576,13 @@ int __ReleaseSubIntrHandler(int intrNumber, int subIntrNumber) {
 		return SCE_KERNEL_ERROR_NOTFOUND_HANDLER;
 	}
 
-	for (auto it = pendingInterrupts.begin(); it != pendingInterrupts.end(); ) {
+	auto it = pendingInterrupts.begin();
+	// The one at the front is what's running, if anything is, and gets popped when it returns. A handler
+	// releasing itself would otherwise leave __KernelReturnFromInterrupt popping an empty list.
+	if (inInterrupt && it != pendingInterrupts.end()) {
+		++it;
+	}
+	while (it != pendingInterrupts.end()) {
 		if (it->intr == intrNumber && it->subintr == subIntrNumber) {
 			pendingInterrupts.erase(it++);
 		} else {
@@ -582,6 +593,30 @@ int __ReleaseSubIntrHandler(int intrNumber, int subIntrNumber) {
 	// This also implicitly disables it, which is correct.
 	intrHandlers[intrNumber]->remove(subIntrNumber);
 	return 0;
+}
+
+// The firmware walks the sub-interrupts in order as it calls them, so one that an earlier handler
+// enables runs in the same interrupt (intr/disablepending), behind the ones queued when it fired.
+static void __QueueLateSubIntr(u32 intrNumber, u32 subIntrNumber) {
+	if (!inInterrupt || pendingInterrupts.empty()) {
+		return;
+	}
+	const PendingInterrupt &running = pendingInterrupts.front();
+	if (running.intr != (int)intrNumber || running.subintr == PSP_INTR_SUB_NONE || running.subintr >= (int)subIntrNumber) {
+		return;
+	}
+	SubIntrHandler *handler = intrHandlers[intrNumber]->get(subIntrNumber);
+	if (!handler || handler->handlerAddress == 0) {
+		return;
+	}
+	auto it = std::next(pendingInterrupts.begin());
+	while (it != pendingInterrupts.end() && it->intr == (int)intrNumber && it->subintr < (int)subIntrNumber) {
+		++it;
+	}
+	if (it != pendingInterrupts.end() && it->intr == (int)intrNumber && it->subintr == (int)subIntrNumber) {
+		return;
+	}
+	pendingInterrupts.insert(it, PendingInterrupt(intrNumber, subIntrNumber));
 }
 
 // What a user mode caller finds on each interrupt, as interruptman.prx checks it: whether a driver
@@ -693,7 +728,12 @@ u32 sceKernelEnableSubIntr(u32 intrNumber, u32 subIntrNumber) {
 		__RegisterSubIntrHandler(intrNumber, subIntrNumber, 0, 0, error);
 	}
 
-	intrHandlers[intrNumber]->enable(subIntrNumber);
+	IntrHandler *intr = intrHandlers[intrNumber];
+	const bool wasEnabled = intr->get(subIntrNumber)->enabled;
+	intr->enable(subIntrNumber);
+	if (!wasEnabled) {
+		__QueueLateSubIntr(intrNumber, subIntrNumber);
+	}
 	return hleLogDebug(Log::sceIntc, 0);
 }
 
@@ -734,8 +774,7 @@ struct PspIntrHandlerOptionParam {
 	u32 max_clock_hi;      //+34
 };  //=38
 
-static int QueryIntrHandlerInfo()
-{
+static int QueryIntrHandlerInfo() {
 	ERROR_LOG_REPORT(Log::sceIntc, "QueryIntrHandlerInfo()");
 	return 0;
 }
@@ -979,7 +1018,8 @@ static u32 sysclib_strncpy(u32 dest, u32 src, u32 size) {
 
 	// This is just regular strncpy, but being explicit to avoid warnings/safety fixes on missing null.
 	u32 i = 0;
-	u32 srcSize = Memory::ClampValidSizeAt(src, size);
+	const u32 destSize = Memory::ClampValidSizeAt(dest, size);
+	const u32 srcSize = std::min(Memory::ClampValidSizeAt(src, size), destSize);
 	const u8 *srcp = Memory::GetPointerUnchecked(src);
 	u8 *destp = Memory::GetPointerWriteUnchecked(dest);
 	for (i = 0; i < srcSize; ++i) {
@@ -989,7 +1029,6 @@ static u32 sysclib_strncpy(u32 dest, u32 src, u32 size) {
 		*destp++ = c;
 	}
 
-	u32 destSize = Memory::ClampValidSizeAt(dest, size);
 	for (; i < destSize; ++i) {
 		*destp++ = 0;
 	}
@@ -1014,7 +1053,10 @@ static u32 sysclib_strchr(u32 src, int c) {
 		return hleLogError(Log::sceKernel, 0, "invalid address");
 	}
 	const std::string str = Memory::GetCharPointer(src);
-	size_t cpos = str.find(str, c);
+	if ((char)c == 0) {
+		return hleLogVerbose(Log::sceKernel, src + (u32)str.size());
+	}
+	size_t cpos = str.find((char)c);
 	if (cpos == std::string::npos) {
 		return hleLogVerbose(Log::sceKernel, 0);
 	}
@@ -1026,7 +1068,10 @@ static u32 sysclib_strrchr(u32 src, int c) {
 		return hleLogError(Log::sceKernel, 0, "invalid address");
 	}
 	const std::string str = Memory::GetCharPointer(src);
-	size_t cpos = str.rfind(str, c);
+	if ((char)c == 0) {
+		return hleLogVerbose(Log::sceKernel, src + (u32)str.size());
+	}
+	size_t cpos = str.rfind((char)c);
 	if (cpos == std::string::npos) {
 		return hleLogVerbose(Log::sceKernel, 0);
 	}

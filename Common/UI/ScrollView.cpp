@@ -63,18 +63,18 @@ void ScrollView::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec ver
 				v.type = UNSPECIFIED;
 			}
 			views_[0]->Measure(dc, MeasureSpec(UNSPECIFIED, measuredWidth_), v);
-			MeasureBySpec(layoutParams_->height, views_[0]->GetMeasuredHeight(), vert, &measuredHeight_);
+			MeasureBySpec(layoutParams_->height, views_[0]->GetMeasuredHeight() + margins.vert(), vert, &measuredHeight_);
 			if (layoutParams_->width == WRAP_CONTENT)
-				MeasureBySpec(layoutParams_->width, views_[0]->GetMeasuredWidth(), horiz, &measuredWidth_);
+				MeasureBySpec(layoutParams_->width, views_[0]->GetMeasuredWidth() + margins.horiz(), horiz, &measuredWidth_);
 		} else {
 			MeasureSpec h = MeasureSpec(AT_MOST, measuredWidth_ - margins.horiz());
 			if (measuredWidth_ == 0.0f && (horiz.type == UNSPECIFIED || layoutParams_->width == WRAP_CONTENT)) {
 				h.type = UNSPECIFIED;
 			}
 			views_[0]->Measure(dc, h, MeasureSpec(UNSPECIFIED, measuredHeight_));
-			MeasureBySpec(layoutParams_->width, views_[0]->GetMeasuredWidth(), horiz, &measuredWidth_);
+			MeasureBySpec(layoutParams_->width, views_[0]->GetMeasuredWidth() + margins.horiz(), horiz, &measuredWidth_);
 			if (layoutParams_->height == WRAP_CONTENT)
-				MeasureBySpec(layoutParams_->height, views_[0]->GetMeasuredHeight(), vert, &measuredHeight_);
+				MeasureBySpec(layoutParams_->height, views_[0]->GetMeasuredHeight() + margins.vert(), vert, &measuredHeight_);
 		}
 
 		// The below seems misguided and leads to wrong sized scrollviews. Need to investigate if it's needed somewhere...
@@ -96,11 +96,11 @@ void ScrollView::Layout() {
 		return;
 	Bounds scrolled;
 
-	// Respect margins
+	// The child was measured inside its margins.
 	const Margins margins = GetMargins();
 
-	scrolled.w = views_[0]->GetMeasuredWidth() - margins.horiz();
-	scrolled.h = views_[0]->GetMeasuredHeight() - margins.vert();
+	scrolled.w = views_[0]->GetMeasuredWidth();
+	scrolled.h = views_[0]->GetMeasuredHeight();
 
 	layoutScrollPos_ = ClampedScrollPos(scrollPos_);
 
@@ -111,7 +111,7 @@ void ScrollView::Layout() {
 				scrollPos_ = *rememberPos_;
 			lastViewSize_ = scrolled.w;
 		}
-		scrolled.x = bounds_.x - layoutScrollPos_;
+		scrolled.x = bounds_.x + margins.left - layoutScrollPos_;
 		scrolled.y = bounds_.y + margins.top;
 		break;
 	case ORIENT_VERTICAL:
@@ -121,7 +121,7 @@ void ScrollView::Layout() {
 			lastViewSize_ = scrolled.h;
 		}
 		scrolled.x = bounds_.x + margins.left;
-		scrolled.y = bounds_.y - layoutScrollPos_;
+		scrolled.y = bounds_.y + margins.top - layoutScrollPos_;
 		break;
 	}
 
@@ -246,20 +246,26 @@ bool ScrollView::Touch(const TouchInput &input) {
 	}
 }
 
+float ScrollView::BottomInsetOverlap() const {
+	const float insetStart = g_display.dp_yres - System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_BOTTOM);
+	return std::max(0.0f, bounds_.y2() - insetStart);
+}
+
 float ScrollView::ChildSize() const {
 	float extraSpace = 0.0f;
 
 	if (orientation_ == ORIENT_VERTICAL) {
-		if (bounds_.y2() >= g_display.dp_yres - 1) {
-			extraSpace = System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_BOTTOM);
-		}
+		// Let the end of the contents scroll up out of the bottom inset.
+		extraSpace = BottomInsetOverlap();
 	}
 
 	if (views_.empty()) {
 		// Avoid division by zero. This shouldn't happen, anyway.
 		return 1.0f;
 	}
-	return std::max(0.01f, views_[0]->GetBounds().GetSize(orientation_) + extraSpace);
+	const Margins margins = GetMargins();
+	const float marginSize = orientation_ == ORIENT_VERTICAL ? margins.vert() : margins.horiz();
+	return std::max(0.01f, views_[0]->GetBounds().GetSize(orientation_) + marginSize + extraSpace);
 }
 
 float ScrollView::ScrollMax() const {
@@ -292,7 +298,7 @@ void ScrollView::Draw(UIContext &dc) {
 	}
 
 	dc.PushScissor(bounds_);
-	dc.FillRect(bg_, bounds_);
+	dc.FillRoundRect(bg_, bounds_, dc.GetTheme().choiceRoundRadius, GetRoundCorners());
 
 	// For debugging layout issues, this can be useful.
 	// dc.FillRect(Drawable(0x60FF00FF), bounds_);
@@ -318,7 +324,7 @@ void ScrollView::Draw(UIContext &dc) {
 
 	// Same at the bottom. (we check against the common UI layout mode)
 	const float y2 = dc.GetLayoutBounds(ViewLayoutMode::IgnoreBottomInset, false).y2();
-	if (shadows_ && bounds_.y2() < y2 && orientation_ == ORIENT_VERTICAL) {
+	if (shadows_ && bounds_.y2() < y2 && BottomInsetOverlap() <= 0.0f && orientation_ == ORIENT_VERTICAL) {
 		float radius = 20.0f;
 
 		Bounds shadowBounds = bounds_;
@@ -422,7 +428,7 @@ NeighborResult ScrollView::FindScrollNeighbor(View *view, const Point2D &target,
 			if (orientation_ == ORIENT_VERTICAL)
 				targetPos.y += mult * bounds_.h;
 			else
-				targetPos.x += mult * bounds_.x;
+				targetPos.x += mult * bounds_.w;
 
 			// Okay, which subview is closest to that?
 			best = vg->FindScrollNeighbor(view, targetPos, direction, best);
@@ -482,6 +488,25 @@ void ScrollView::SetVisibility(Visibility visibility) {
 void ScrollView::ScrollTo(float newScrollPos) {
 	scrollTarget_ = newScrollPos;
 	scrollToTarget_ = true;
+}
+
+void ScrollView::ScrollToCenter(const View *view) {
+	const Bounds &vBounds = view->GetBounds();
+	if (orientation_ == ORIENT_VERTICAL) {
+		ScrollTo(layoutScrollPos_ + vBounds.centerY() - bounds_.y - bounds_.h * 0.5f);
+	} else {
+		ScrollTo(layoutScrollPos_ + vBounds.centerX() - bounds_.x - bounds_.w * 0.5f);
+	}
+}
+
+ScrollView *GetEnclosingScrollView(View *view) {
+	for (ViewGroup *group = view->Parent(); group; group = group->Parent()) {
+		ScrollView *scrollView = dynamic_cast<ScrollView *>(group);
+		if (scrollView) {
+			return scrollView;
+		}
+	}
+	return nullptr;
 }
 
 void ScrollView::ScrollRelative(float distance) {
@@ -638,6 +663,7 @@ void ListView::CreateAllItems() {
 			OnItemCallback(i, e);
 		});
 	}
+	linLayout_->ApplyRoundCorners();
 }
 
 void ListView::Measure(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert) {

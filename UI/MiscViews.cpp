@@ -61,14 +61,18 @@ TopBar::TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, 
 		backButton_->OnClick.Add([](UI::EventParams &e) {
 			e.bubbleResult = DR_BACK;
 		});
+		backButton_->SetRoundCorners();
 	} else {
 		Add(new Spacer(4.0f));
 	}
 
 	if (!title.empty()) {
-		TextView *titleView = Add(new TextView(title, ALIGN_VCENTER, false, new LinearLayoutParams(1.0f, Gravity::G_VCENTER)));
+		TextView *titleView = Add(new TextView(title, ALIGN_VCENTER | FLAG_ELLIPSIZE_TEXT, false, new LinearLayoutParams(1.0f, Gravity::G_VCENTER)));
 		titleView->SetTextColor(ctx.GetTheme().itemStyle.fgColor);
 		titleView->SetBig(true);
+		if (flags & TopBarFlags::DropShadowTitle) {
+			titleView->SetShadow(true);
+		}
 		// If using HCENTER, to balance the centering, add a spacer on the right.
 		// Add(new Spacer(50.0f));
 	}
@@ -78,6 +82,7 @@ TopBar::TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, 
 		contextMenuButton_->OnClick.Add([this](UI::EventParams &e) {
 			this->OnContextMenuClick.Trigger(e);
 		});
+		contextMenuButton_->SetRoundCorners();
 	}
 }
 
@@ -130,6 +135,10 @@ private:
 	int textureWidth_ = 0;
 	int textureHeight_ = 0;
 };
+
+UI::View *CreateGameIconView(const Path &gamePath, UI::LayoutParams *layoutParams) {
+	return new SimpleGameIconView(gamePath, layoutParams);
+}
 
 PaneTitleBar::PaneTitleBar(const Path &gamePath, std::string_view title, const std::string_view settingsCategory, UI::LayoutParams *layoutParams) 
 	: UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams), gamePath_(gamePath) {
@@ -232,6 +241,9 @@ void GameImageView::Draw(UIContext &dc) {
 	int x = bounds_.x + (bounds_.w - nw) / 2.0f;
 
 	dc.Flush();
+	dc.RebindTexture();
+	dc.DrawRectDropShadow(bounds_, 10.0f, 0.7f);
+	dc.Flush();
 	dc.GetDrawContext()->BindTexture(0, texture);
 	dc.Draw()->Rect(x, bounds_.y, nw, bounds_.h, color);
 	dc.Flush();
@@ -299,7 +311,7 @@ void GameInfoBGView::Draw(UIContext &dc) {
 SettingHint::SettingHint(std::string_view text, UI::View *setting)
 	: UI::TextView(text, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT)), setting_(setting) {
 	SetTextSize(UI::TextSize::Tiny);
-	SetPadding(UI::Margins(14, 0, 12, 8));
+	SetPadding(UI::Margins(12, 0, 12, 8));
 	SetAlign(FLAG_WRAP_TEXT);
 }
 
@@ -307,7 +319,9 @@ void SettingHint::Draw(UIContext &dc) {
 	const bool enabled = setting_ ? setting_->IsEnabled() : true;
 	const UI::Style &style = enabled ? dc.GetTheme().itemStyle : dc.GetTheme().itemDisabledStyle;
 	SetTextColor(style.fgColor);  // bit hacky but works
-	dc.FillRoundRect(style.background, bounds_, dc.GetTheme().choiceRoundRadius, roundCorners_);
+	if (setting_) {
+		dc.FillRoundRect(style.background, bounds_, dc.GetTheme().choiceRoundRadius, roundCorners_);
+	}
 	UI::TextView::Draw(dc);
 }
 

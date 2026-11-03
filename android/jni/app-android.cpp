@@ -113,6 +113,7 @@ struct JNIEnv {};
 #include "UI/GameInfoCache.h"
 
 #include "app-android.h"
+#include "android/jni/PerformanceHint.h"
 
 AndroidAudioState *g_audioState;
 
@@ -484,6 +485,9 @@ bool System_GetPropertyBool(SystemProperty prop) {
 		}
 	case SYSPROP_HAS_KEYBOARD:
 		return deviceType != DEVICE_TYPE_VR;
+	case SYSPROP_KEYBOARD_IS_SOFT:
+		// Even with a hardware keyboard connected, the soft one can still be shown.
+		return true;
 	case SYSPROP_HAS_ACCELEROMETER:
 		// A headset has the sensors, but tilting it isn't tilt control.
 		return g_hasAccelerometer && deviceType != DEVICE_TYPE_VR;
@@ -1195,6 +1199,9 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		// The MIME type first, as a path could contain the separator.
 		PushCommand("share_file", param2 + ":@:" + param1);
 		return true;
+	case SystemRequestType::SET_SOFT_KEYBOARD_FORCED:
+		PushCommand("forceKeyboard", !param3 ? "off" : (param4 ? "persist" : "on"));
+		return true;
 	case SystemRequestType::SET_KEEP_SCREEN_BRIGHT:
 		PushCommand("set_keep_screen_bright", param3 ? "on" : "off");
 		return true;
@@ -1443,6 +1450,8 @@ extern "C" void JNICALL Java_org_ppsspp_ppsspp_NativeApp_sendMessageFromJava(JNI
 	} else if (msg == "permission_granted") {
 		SetPermissionStatusFromJava(prm, PERMISSION_STATUS_GRANTED);
 		System_PostUIMessage(UIMessage::PERMISSION_GRANTED, prm);
+	} else if (msg == "softKeyboardHidden") {
+		System_PostUIMessage(UIMessage::SOFT_KEYBOARD_HIDDEN);
 	} else if (msg == "sustained_perf_supported") {
 		sustainedPerfSupported = true;
 	} else if (msg == "safe_insets") {
@@ -1773,10 +1782,13 @@ static void RenderLoopThread(ANativeWindow *wnd, GraphicsContext *graphicsContex
 	}
 
 	renderer_inited = true;
-	const auto frame = [](GraphicsContext *graphicsContext) {
+	// The frame callback runs on the emu thread, which with OpenGL isn't this one.
+	PerformanceHintSession perfHint;
+	const auto frame = [&perfHint](GraphicsContext *graphicsContext) {
 		ApplyPendingResize();
 		NativeFrame(graphicsContext);
 		ProcessFrameCommands();
+		perfHint.ReportFrame();
 		return !exitRenderLoop;
 	};
 	// Both backends share one lifecycle now, which is the point of all this: RunGraphicsLoop picks

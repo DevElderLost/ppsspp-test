@@ -55,13 +55,16 @@
 #include "Core/CmdLine.h"
 #include "Common/Net/HTTPRequest.h"
 #include "Core/Config.h"
+#include "Core/Instance.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
+#include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/CoreTiming.h"
 #include "Core/EmuThread.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/__sceAudio.h"
 #include "Core/HLE/sceCtrl.h"
+#include "Core/HLE/sceDisplay.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/System.h"
 #include "Core/Util/PSARUnpack.h"
@@ -69,6 +72,7 @@
 #include "headless/ReverseEngineer.h"
 #include "Core/WebServer.h"
 #include "Core/HLE/sceUtility.h"
+#include "Core/Instance.h"
 #include "Core/SaveState.h"
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
@@ -431,6 +435,8 @@ struct AutoTestOptions {
 	bool bench;
 	bool printEqualLines;
 	bool frameStats;
+	// Keep emulated time from running ahead of the wall clock (--realtime).
+	bool realtime;
 	// What --disable-hle asked for, or 0 if it was not passed. Only an explicit request binds:
 	// sceMpeg and sceMp4 run the firmware module by default now and fall back to the HLE wherever
 	// none is installed, which must not fail every run on such a machine.
@@ -553,6 +559,8 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 	const double emulatedStepLimit = 1.0;
 	double emulatedElapsed = 0.0;
 	double lastEmulatedTime = CoreTiming::GetGlobalTimeUs() / 1000000.0;
+	// The wall clock time --realtime paces emulatedElapsed from.
+	double paceStart = startTime;
 	// --frame-stats: flips in each emulated second, starting once the state (if any) is loaded.
 	std::vector<int> flipsPerSecond;
 	double statsStart = -1.0;
@@ -656,6 +664,29 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 
 		// Finer steps when input is scripted, so short presses land.
 		int blockTicks = (int)usToCycles(1000000 / (opt.presses.empty() ? 10 : 60));
+		if (opt.realtime) {
+			// Display flips are the only thing that paces headless otherwise, and a test that doesn't
+			// draw never flips, so the emulated clock would race ahead of instances it talks to. The JIT
+			// cores only return at the end of a frame, so like the app, this paces once per frame.
+			blockTicks = (int)usToCycles(1000);
+			// At an alternate speed (--speed), the emulated clock runs that much faster than the wall clock.
+			const int frameLimit = __DisplayGetFrameTimingLimit();
+			const double speed = frameLimit > 0 ? frameLimit / 60.0 : 1.0;
+			double ahead = (emulatedElapsed - (time_now_d() - paceStart) * speed) / speed;
+			// Wall time the emulated clock stood still (at the instance sync, or waiting for the
+			// network) isn't made up afterwards. Running flat out to catch up would turn the real
+			// latency of the next exchange into emulated seconds, and blocking calls would time out.
+			const double maxBehind = 0.005;
+			if (ahead < -maxBehind) {
+				paceStart += -maxBehind - ahead;
+				ahead = -maxBehind;
+			}
+			// With --lag-sync, lag sync paces every emulated millisecond instead, and two pacers out of
+			// phase would undo each other.
+			if (ahead > 0.001 && !g_Config.bForceLagSync) {
+				sleep_ms((int)(std::min(ahead, 0.05) * 1000.0), "realtime");
+			}
+		}
 		PSP_RunLoopFor(blockTicks);
 
 		// If we were rendering, this might be a nice time to do something about it.
@@ -726,6 +757,10 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 			perSecond += StringFromFormat(" %d", flips);
 		}
 		fprintf(stderr, "Frame stats: %d flips in %d emulated seconds, wall %.1fs, per second:%s\n", total, (int)flipsPerSecond.size(), time_now_d() - startTime, perSecond.c_str());
+	}
+	if (coreParameter.bootFromState) {
+		// Counted from the state's load. More than a few, and the game has gone off its usual path.
+		fprintf(stderr, "Failed disc reads: %d\n", pspFileSystem.FailedDiscReads());
 	}
 
 	// Before EndDrawFrame: Vulkan can only read back a framebuffer inside a frame.
@@ -825,7 +860,8 @@ int RunTests(GraphicsContext *graphicsContext, CoreParameter &coreParameter, con
 
 	for (size_t i = 0; i < testFilenames.size(); ++i) {
 		coreParameter.fileToStart = Path(testFilenames[i]);
-		if (!File::Exists(coreParameter.fileToStart)) {
+		// An http:// game is streamed by the loader (HTTPFileLoader), which reports its own errors.
+		if (coreParameter.fileToStart.Type() != PathType::HTTP && !File::Exists(coreParameter.fileToStart)) {
 			fprintf(stderr, "File not found: %s\n", coreParameter.fileToStart.c_str());
 			missingTests.push_back(testFilenames[i]);
 			continue;
@@ -952,6 +988,7 @@ int main(int argc, const char* argv[]) {
 	testOptions.verbose = cmdLineOptions.verbose.value_or(false);
 	testOptions.printEqualLines = cmdLineOptions.printEqualLines.value_or(false);
 	testOptions.frameStats = cmdLineOptions.frameStats.value_or(false);
+	testOptions.realtime = cmdLineOptions.realtime.value_or(false);
 	// BUTTONS is a sceCtrl mask (hex with 0x), DURATION defaults to 0.15s.
 	if (cmdLineOptions.pressScript.has_value()) {
 		std::vector<std::string> items;
@@ -1011,6 +1048,17 @@ int main(int argc, const char* argv[]) {
 		testFilenames.end()
 	);
 
+	// A savestate on its own boots without its game, and then loads.
+	std::string stateBootPath;
+	if (testFilenames.size() == 1 && endsWithNoCase(testFilenames[0], ".ppst")) {
+		stateBootPath = testFilenames[0];
+		if (stateToLoad || cmdLineOptions.stateToSave.has_value()) {
+			fprintf(stderr, "--state and --save-state can't be used when booting a state\n");
+			return 1;
+		}
+		stateToLoad = stateBootPath.c_str();
+	}
+
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
 	g_logManager.Init(&g_Config.bEnableLogging, outputDebugStringLog);
 
@@ -1060,7 +1108,8 @@ int main(int argc, const char* argv[]) {
 			stats.compressionCounts[(int)PSARCompression::KL3E],
 			stats.compressionCounts[(int)PSARCompression::LZR],
 			stats.compressionCounts[(int)PSARCompression::Unknown]);
-		return ok ? 0 : 1;
+		// A walk that got to the end can still have failed on every file, so count those too.
+		return ok && stats.failed == 0 ? 0 : 1;
 	}
 
 	// Same deal for installing a game update package.
@@ -1152,6 +1201,9 @@ int main(int argc, const char* argv[]) {
 	g_Config.bEnableWlan = true;
 	// The net tests want WLAN on, but a test run shouldn't depend on reaching a real adhoc server.
 	g_Config.sProAdhocServer = "localhost";
+	// Headless doesn't join the app's instance counter (InitInstanceCounter), but behaves as the only
+	// instance: with the default 0, the localhost IP derived from it is 127.0.0.0, which macOS won't bind.
+	PPSSPP_ID = 1;
 	g_Config.sMACAddress = "12:34:56:78:9A:BC";
 	g_Config.iFirmwareVersion = PSP_DEFAULT_FIRMWARE;
 	g_Config.iPSPModel = PSP_MODEL_SLIM;
@@ -1177,6 +1229,12 @@ int main(int argc, const char* argv[]) {
 	// ApplyToConfig() has the final say, applied after RestoreDefaults() and the headless
 	// overrides above, so a matching command line flag always wins.
 	cmdLineOptions.ApplyToConfig();
+	// Instances talking to each other over ad hoc need their own 127.0.0.N address and MAC, which come
+	// from PPSSPP_ID. Headless doesn't run the instance counter the app uses to pick one.
+	PPSSPP_ID = (uint8_t)cmdLineOptions.instance.value_or(1);
+	if (cmdLineOptions.syncFile.has_value()) {
+		InitInstanceSync(cmdLineOptions.syncFile.value(), cmdLineOptions.instance.value_or(1), cmdLineOptions.syncCount.value_or(1));
+	}
 
 	// pspautotests is plain homebrew PRXes so do not ship user libraries that a retail disc may carry. 
 	// So we must use HLE, unless we install firmware.
@@ -1292,6 +1350,7 @@ int main(int argc, const char* argv[]) {
 	coreParameter.mountRoot = mountRoot.empty() ? Path() : Path(mountRoot);
 	coreParameter.startBreak = false;
 	coreParameter.headLess = true;
+	coreParameter.bootFromState = !stateBootPath.empty();
 	coreParameter.dumpCompat = cmdLineOptions.dumpCompat.value_or(false);
 	if (cmdLineOptions.disableGPUFeatures.has_value()) {
 		std::vector<std::string> names;
@@ -1319,7 +1378,11 @@ int main(int argc, const char* argv[]) {
 	coreParameter.renderHeight = 272 * coreParameter.renderScaleFactor;
 	coreParameter.pixelWidth = 480 * coreParameter.renderScaleFactor;
 	coreParameter.pixelHeight = 272 * coreParameter.renderScaleFactor;
-	coreParameter.fastForward = true;
+	// Ad hoc tests between instances wait for each other over the real network, so they need PSP speed.
+	coreParameter.fastForward = !cmdLineOptions.realtime.value_or(false);
+	if (cmdLineOptions.speedPercent.has_value()) {
+		coreParameter.fpsLimit = FPSLimit::CUSTOM1;
+	}
 
 #if PPSSPP_PLATFORM(IOS)
 	// GetExeDirectory() knows nothing on iOS, but argv[0] is the executable inside the .app,
@@ -1525,6 +1588,7 @@ int main(int argc, const char* argv[]) {
 				}
 				g_stateLoadFailed = true;
 			}
+			pspFileSystem.ResetFailedDiscReads();
 			g_stateLoadPending = false;
 		});
 	}
@@ -1551,6 +1615,7 @@ int main(int argc, const char* argv[]) {
 		retval = 1;
 	}
 
+	ShutdownInstanceSync();
 	graphicsContext->ShutdownAPI();
 
 	delete graphicsContext;

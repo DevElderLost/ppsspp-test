@@ -1,6 +1,6 @@
 HAVE_LIBRETRO_VFS ?= 1
 
-FFMPEGDIR		= $(CORE_DIR)/ffmpeg
+FFMPEGDIR		= $(CORE_DIR)/ext/ffmpeg
 LIBRETRODIR		= $(CORE_DIR)/libretro
 COREDIR			= $(CORE_DIR)/Core
 COMMONDIR		= $(CORE_DIR)/Common
@@ -30,7 +30,6 @@ INCFLAGS += \
 	-I$(ZSTDDIR) \
 	-I$(EXTDIR)/snappy \
 	-I$(FFMPEGDIR) \
-	$(FFMPEGINCFLAGS) \
 	-I$(EXTDIR)/cityhash \
 	-I$(EXTDIR)/armips \
 	-I$(EXTDIR)/armips/ext/filesystem/include \
@@ -698,13 +697,24 @@ SOURCES_CXX += \
 	       $(EXTDIR)/aemu_postoffice/client/mutex_impl_cpp.cpp \
 	       $(EXTDIR)/aemu_postoffice/client/delay_impl_cpp.cpp \
 	       $(EXTDIR)/aemu_postoffice/client/log_impl_ppsspp.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/server.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/session.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/semaphore.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/log.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/common.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/enet.cpp \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/snapshot.cpp \
 
 ifeq ($(PLATFORM_EXT), win32)
 SOURCES_C += \
 	       $(EXTDIR)/aemu_postoffice/client/sock_impl_windows.c
+SOURCES_CXX += \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/native_socket_windows.cpp
 else
 SOURCES_C += \
 	       $(EXTDIR)/aemu_postoffice/client/sock_impl_linux.c
+SOURCES_CXX += \
+	       $(EXTDIR)/aemu_postoffice/server_cpp/native_socket_linux.cpp
 endif
 
 SOURCES_CXX += \
@@ -828,6 +838,9 @@ SOURCES_CXX += \
 	       $(COREDIR)/HLE/sceNet.cpp \
 	       $(COREDIR)/HLE/sceNet_lib.cpp \
 	       $(COREDIR)/HLE/NetAdhocCommon.cpp \
+	       $(COREDIR)/HLE/AdhocTransportP2P.cpp \
+	       $(COREDIR)/HLE/AdhocTransportRelay.cpp \
+	       $(COREDIR)/HLE/AdhocTransportNetSim.cpp \
 	       $(COREDIR)/HLE/sceNetAdhoc.cpp \
 	       $(COREDIR)/HLE/sceNetAdhocMatching.cpp \
 	       $(COREDIR)/HLE/sceNetApctl.cpp \
@@ -1137,6 +1150,7 @@ SOURCES_C += $(LIBRETROCOMMONDIR)/compat/compat_posix_string.c \
              $(LIBRETROCOMMONDIR)/file/file_path_io.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream.c \
              $(LIBRETROCOMMONDIR)/streams/file_stream_transforms.c \
+			 $(LIBRETROCOMMONDIR)/string/rstrtod.c \
              $(LIBRETROCOMMONDIR)/string/stdstring.c \
              $(LIBRETROCOMMONDIR)/time/rtime.c \
              $(LIBRETROCOMMONDIR)/vfs/vfs_implementation.c

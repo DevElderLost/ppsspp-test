@@ -4,6 +4,7 @@
 #include "Common/UI/View.h"
 #include "UI/ViewGroup.h"
 #include "UI/GameInfoCache.h"
+#include "UI/BackgroundAudio.h"
 
 // Compound view, showing a text with an icon.
 class TextWithImage : public UI::LinearLayout {
@@ -22,6 +23,7 @@ enum class TopBarFlags {
 	Portrait = 1,
 	ContextMenuButton = 2,
 	NoBackButton = 4,
+	DropShadowTitle = 8,
 };
 ENUM_CLASS_BITOPS(TopBarFlags);
 
@@ -47,6 +49,9 @@ public:
 private:
 	bool animated_ = true;
 };
+
+// The icon of the game, for showing that settings are game-specific.
+UI::View *CreateGameIconView(const Path &gamePath, UI::LayoutParams *layoutParams);
 
 // Title at the top of a scrolling pane of settings. May later include a back button, but currently doesn't.
 // The gamePath_ is used to draw the icon of the game who's settings are currently being edited.
@@ -92,6 +97,7 @@ protected:
 
 class SettingHint : public UI::TextView {
 public:
+	// If setting is null, it's a "global hint", used outside of ChoiceGroups, usually after one.
 	SettingHint(std::string_view text, UI::View *setting);
 	std::string DescribeText() const override { return setting_ ? setting_->DescribeText() : ""; }  // So that descriptions show up in searches under their parent views
 	void Draw(UIContext &dc) override;

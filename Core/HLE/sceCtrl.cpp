@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -109,6 +110,14 @@ static u32 emuRapidFireFrames = 0;
 static bool emuRapidFireToggle = true;
 static u32 emuRapidFireInterval = 5;
 
+// Set while a system overlay (the HOME button's quit screen) owns the controls: the game then reads
+// no buttons and centered sticks, as impose does on a PSP. Host-side peeks still see the real state.
+static std::atomic<bool> gameInputBlocked{ false };
+
+// Buttons pressed since the last sample. A press and release that both land between two samples
+// would otherwise never be seen by the game. Guarded by ctrlMutex.
+static u32 ctrlUnsampledPresses = 0;
+
 // These buttons are not affected by rapid fire (neither is analog.)
 const u32 CTRL_EMU_RAPIDFIRE_MASK = CTRL_UP | CTRL_DOWN | CTRL_LEFT | CTRL_RIGHT;
 
@@ -117,7 +126,8 @@ static void __CtrlUpdateLatch()
 	std::lock_guard<std::mutex> guard(ctrlMutex);
 	u64 t = CoreTiming::GetGlobalTimeUs();
 
-	u32 buttons = ctrlCurrent.buttons;
+	u32 buttons = ctrlCurrent.buttons | ctrlUnsampledPresses;
+	ctrlUnsampledPresses = 0;
 	if (emuRapidFire && emuRapidFireToggle)
 		buttons &= CTRL_EMU_RAPIDFIRE_MASK;
 
@@ -137,6 +147,11 @@ static void __CtrlUpdateLatch()
 		float rY = x * sinAngle + y * cosAngle;
 		ctrlBufs[ctrlBuf].analog[0][0] = (u8)Clamp(rX + 128, 0.0f, 255.0f);
 		ctrlBufs[ctrlBuf].analog[0][1] = (u8)Clamp(rY + 128, 0.0f, 255.0f);
+	}
+
+	if (gameInputBlocked) {
+		buttons = 0;
+		memset(ctrlBufs[ctrlBuf].analog, CTRL_ANALOG_CENTER, sizeof(ctrlBufs[ctrlBuf].analog));
 	}
 
 	ctrlBufs[ctrlBuf].buttons = buttons;
@@ -169,6 +184,14 @@ static int __CtrlResetLatch()
 	memset(&latch, 0, sizeof(CtrlLatch));
 	ctrlLatchBufs = 0;
 	return oldBufs;
+}
+
+void __CtrlSetGameInputBlocked(bool blocked) {
+	gameInputBlocked = blocked;
+}
+
+bool __CtrlIsGameInputBlocked() {
+	return gameInputBlocked;
 }
 
 u32 __CtrlPeekButtons()
@@ -266,7 +289,8 @@ void __CtrlUpdateButtons(u32 bitsToSet, u32 bitsToClear)
 
 	std::lock_guard<std::mutex> guard(ctrlMutex);
 	// There's no atomic operation for this, so mutex it is.
-	ctrlCurrent.buttons = (ctrlCurrent.buttons & ~bitsToClear) | bitsToSet;
+	ctrlUnsampledPresses |= bitsToSet & ~ctrlCurrent.buttons;
+	ctrlCurrent.buttons =(ctrlCurrent.buttons & ~bitsToClear) | bitsToSet;
 }
 
 void __CtrlSetAnalogXY(int stick, float x, float y)
@@ -429,6 +453,8 @@ void __CtrlInit() {
 	// Start with everything released.
 	latch.btnRelease = 0xffffffff;
 
+	gameInputBlocked = false;
+	ctrlUnsampledPresses = 0;
 	memset(&ctrlCurrent, 0, sizeof(ctrlCurrent));
 	memset(ctrlCurrent.analog, CTRL_ANALOG_CENTER, sizeof(ctrlCurrent.analog));
 	analogEnabled = false;
@@ -444,6 +470,9 @@ void __CtrlDoState(PointerWrap &p)
 	auto s = p.Section("sceCtrl", 1, 3);
 	if (!s)
 		return;
+
+	// Host input from before the load shouldn't show up in the loaded state.
+	ctrlUnsampledPresses = 0;
 
 	Do(p, analogEnabled);
 	Do(p, ctrlLatchBufs);

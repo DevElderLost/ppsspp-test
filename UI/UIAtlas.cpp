@@ -57,6 +57,7 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_TRIANGLE", true},
 	{"I_SELECT", true},
 	{"I_START", true},
+	{"I_HOME", true},
 	{"I_ARROW", false},
 	{"I_ROUND", false},
 	{"I_ROUND_LINE", true},
@@ -105,7 +106,7 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_FULLSCREEN", false},
 	{"I_RESTORE", false},
 	{"I_SDCARD", false},
-	{"I_HOME", false},
+	{"I_HOME_ICON", false},
 	{"I_A", true},
 	{"I_B", true},
 	{"I_C", true},
@@ -123,6 +124,8 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_ARROW_RIGHT", true},
 	{"I_ARROW_UP", true},
 	{"I_ARROW_DOWN", true},
+	{"I_CHEVRON_LEFT", false},
+	{"I_CHEVRON_RIGHT", false},
 	{"I_SLIDERS", false},
 	{"I_THREE_DOTS", true},
 	{"I_INFO", false},
@@ -204,6 +207,7 @@ static const ImageMeta g_uiImageIDs[] = {
 	{"I_ARCHIVE_RAR", false},
 	{"I_DOWNLOAD", false},
 	{"I_NETWORK", false},
+	{"I_LANGUAGE", false},
 };
 
 static std::string PNGNameFromID(std::string_view id) {

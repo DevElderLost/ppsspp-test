@@ -19,27 +19,12 @@
 #include <atomic>
 #include "ppsspp_config.h"
 
-#include <algorithm>
-#include <set>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
-#include "Common/Net/Resolve.h"
-#include "Common/Audio/AudioBackend.h"
-#include "Common/GPU/OpenGL/GLFeatures.h"
-#include "Common/Render/DrawBuffer.h"
-#include "Common/UI/Root.h"
-#include "Common/UI/View.h"
-#include "Common/UI/ViewGroup.h"
-#include "Common/UI/Context.h"
-#include "Common/UI/Notice.h"
-#include "Common/UI/ScreenManager.h"
-#include "Common/Render/ManagedTexture.h"
-#include "Common/VR/PPSSPPVR.h"
-#include "Common/BitSet.h"
-#include "Common/System/Display.h"  // Only to check screen aspect ratio with pixel_yres/pixel_xres
-#include "Common/System/Request.h"
-#include "Common/System/OSD.h"
-#include "Common/System/NativeApp.h"
-#include "Common/Data/Color/RGBAUtil.h"
+#include "Common/Common.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/UI/PopupScreens.h"
@@ -70,42 +55,34 @@
 #include "UI/AdhocServerScreen.h"
 
 #include "Common/File/FileUtil.h"
+#include "Common/File/Path.h"
+#include "Common/Log.h"
 #include "Common/StringUtils.h"
+#include "Common/System/Request.h"
+#include "Common/System/System.h"
+#include "Common/UI/PopupScreens.h"
+#include "Common/UI/ScreenManager.h"
+#include "Common/UI/View.h"
+#include "Common/UI/ViewGroup.h"
 #include "Core/Config.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Core/ModImport.h"
 #include "Core/Mods/DataBinDump.h"
 #include "Core/ConfigValues.h"
-#include "Core/KeyMap.h"
-#include "Core/TiltEventProcessor.h"
 #include "Core/Instance.h"
-#include "Core/System.h"
+#include "Core/KeyMap.h"
 #include "Core/Reporting.h"
-#include "Core/HLE/sceUsbCam.h"
-#include "Core/HLE/sceUsbMic.h"
-#include "Core/HLE/sceUtility.h"
-#include "Core/Util/PortManager.h"
 #include "GPU/Common/PostShader.h"
-#include "GPU/GPU.h"
+#include "UI/AdhocServerScreen.h"
+#include "UI/GameInfoCache.h"
+#include "UI/GamepadEmu.h"
+#include "UI/GameSettingsScreen.h"
+#include "UI/MiscViews.h"
+#include "UI/Settings/MainSettingsPages.h"
+#include "UI/Theme.h"
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
 #include "Core/Util/DarwinFileSystemServices.h"
-#endif
-
-#if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
-#pragma warning(disable:4091)  // workaround bug in VS2015 headers
-#include "Windows/MainWindow.h"
-#include <shlobj.h>
-#include "Windows/W32Util/ShellUtil.h"
-#endif
-
-#if PPSSPP_PLATFORM(ANDROID)
-
-#include "android/jni/AndroidAudio.h"
-#include "Common/File/AndroidStorage.h"
-
-extern AndroidAudioState *g_audioState;
-
 #endif
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
@@ -120,26 +97,17 @@ void SetMemStickDirDarwin(int requesterToken) {
 #endif
 
 GameSettingsScreen::GameSettingsScreen(const Path &gamePath, std::string gameID, bool editThenRestore)
-	: UITabbedBaseDialogScreen(gamePath, &g_Config.iSettingsCurrentTab, TabDialogFlags::HorizontalOnlyIcons | TabDialogFlags::VerticalShowIcons), gameID_(gameID), editGameSpecificThenRestore_(editThenRestore) {
-	prevInflightFrames_ = g_Config.iInflightFrames;
-	analogSpeedMapped_ = KeyMap::InputMappingsFromPspButton(VIRTKEY_SPEED_ANALOG, nullptr, true);
-
+	: SettingsPagesDialogScreen(gamePath, &g_Config.iSettingsCurrentTab, TabDialogFlags::HorizontalOnlyIcons | TabDialogFlags::VerticalShowIcons), gameID_(gameID), editGameSpecificThenRestore_(editThenRestore) {
 	if (editGameSpecificThenRestore_) {
 		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
 		g_Config.LoadGameConfig(gameID_);
 	}
 
-	ReadConfigTemporaries();
-}
-
-// Also called after restoring defaults, so the old values aren't written back over them.
-void GameSettingsScreen::ReadConfigTemporaries() {
-	// Written back on exit, so it must be read even if the System tab is never opened.
-	enableReports_ = Reporting::IsEnabled();
+	ReadSystemPageState(&systemState_);
 }
 
 GameSettingsScreen::~GameSettingsScreen() {
-	Reporting::Enable(enableReports_, "report.ppsspp.org");
+	Reporting::Enable(systemState_.enableReports, "report.ppsspp.org");
 	Reporting::UpdateConfig();
 	if (!g_Config.Save("GameSettingsScreen::onFinish")) {
 		std::string message = "Failed to save settings!\n";
@@ -165,40 +133,16 @@ GameSettingsScreen::~GameSettingsScreen() {
 	System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
 }
 
+void GameSettingsScreen::OpenDeveloperTools() {
+	OpenPage("GameSettingsTools", "Developer Tools");
+}
+
 void GameSettingsScreen::PreCreateViews() {
+	if (RecreatingForPageChange()) {
+		return;
+	}
 	ReloadAllPostShaderInfo(screenManager()->getDrawContext());
 	ReloadAllThemeInfo();
-#if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
-	CheckMemstickInstallState();
-#endif
-}
-
-static bool UsingHardwareTextureScaling() {
-	return g_Config.bTexHardwareScaling && (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::METAL) && !g_Config.bSoftwareRendering;
-}
-
-static std::string TextureTranslateName(std::string_view value) {
-	const TextureShaderInfo *info = GetTextureShaderInfo(value);
-	if (info) {
-		auto ts = GetI18NCategory(I18NCat::TEXTURESHADERS);
-		return std::string(ts->T(value, info->name.c_str()));
-	} else {
-		return std::string(value);
-	}
-}
-
-static std::string *GPUDeviceNameSetting() {
-	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		return &g_Config.sVulkanDevice;
-	}
-#ifdef _WIN32
-	if (g_Config.iGPUBackend == (int)GPUBackend::DIRECT3D11) {
-		return &g_Config.sD3D11Device;
-	}
-#endif
-	return nullptr;
-}
-
 #if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
 // Works out where the memstick is (installed.txt next to the exe means My Documents or a custom
 // folder), and which of the two checkboxes can be changed.
@@ -847,19 +791,8 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 		audioBackendSettings->Add(new InfoItem(a->T("Audio Error"), audioErrorStr));
 	}
 #endif
+	CheckMemstickInstallState(&systemState_);
 #endif
-
-	std::vector<std::string> micList = Microphone::getDeviceList();
-	if (!micList.empty()) {
-		ChoiceGroup *microphoneSettings = audioSettings->Add(new ChoiceGroup(a->T("Microphone")));
-		std::vector<std::string> micValues = micList;
-		micList.emplace(micList.begin(), a->T("Auto"));
-		micValues.insert(micValues.begin(), "");
-		PopupMultiChoiceDynamic *MicChoice = microphoneSettings->Add(new PopupMultiChoiceDynamic(&g_Config.sMicDevice, a->T("Microphone Device"), micList, I18NCat::NONE, screenManager(), &micValues));
-		MicChoice->OnChoice.Add([](UI::EventParams &e) {
-			Microphone::onMicDeviceChange();
-		});
-	}
 }
 
 void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings) {
@@ -1653,178 +1586,47 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	recordingSettings->Add(new CheckBox(&g_Config.bSaveLoadResetsAVdumping, sy->T("Reset Recording on Save/Load State")));
 #endif
 }
+// One per tab.
+struct PageDef {
+	const char *tag;
+	const char *title;  // In MAINSETTINGS.
+	const char *icon;
+	const char *helpTag;  // If null, there's no help button.
+	I18NCat cat;
+	// Null for the tabs that also take systemState_, given instead.
+	void (*build)(SettingsPage *page);
+	void (*buildWithState)(SettingsPage *page, SystemPageState *state);
+};
 
-void GameSettingsScreen::CreateVRSettings(UI::ViewGroup *vrSettings) {
+static const PageDef pageDefs[] = {
+	{ "GameSettingsGeneral", "General", "I_SLIDERS", nullptr, I18NCat::SYSTEM, nullptr, &BuildGeneralSettings },
+	{ "GameSettingsControls", "Controls", "I_CONTROLLER", "controls", I18NCat::CONTROLS, &BuildControlsSettings },
+	{ "GameSettingsGraphics", "Graphics", "I_DISPLAY", "graphics", I18NCat::GRAPHICS, &BuildGraphicsSettings },
+	{ "GameSettingsAudio", "Audio", "I_SPEAKER_MAX", "audio", I18NCat::AUDIO, &BuildAudioSettings },
+	{ "GameSettingsNetworking", "Networking", "I_WIFI", "network", I18NCat::NETWORKING, &BuildNetworkingSettings },
+	{ "GameSettingsTools", "Tools", "I_TOOLS", "tools", I18NCat::MAINSETTINGS, &BuildToolsSettings },
+	{ "GameSettingsSystem", "System", "I_PSP", "system", I18NCat::SYSTEM, nullptr, &BuildSystemSettings },
+	{ "GameSettingsVR", "VR", nullptr, nullptr, I18NCat::VR, &BuildVRSettings },
+};
+
+void GameSettingsScreen::CreateTabs() {
 	using namespace UI;
 
-	auto vr = GetI18NCategory(I18NCat::VR);
-	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
+	const SystemDeviceType deviceType = (SystemDeviceType)System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
+	const bool showVR = deviceType == DEVICE_TYPE_VR || g_Config.bForceVR;
 
-	if (deviceType == DEVICE_TYPE_VR) {
-		ChoiceGroup *vrGeneralSettings = vrSettings->Add(new ChoiceGroup(vr->T("Virtual reality")));
-		vrGeneralSettings->Add(new CheckBox(&g_Config.bEnableVR, vr->T("Virtual reality")));
-		vrGeneralSettings->Add(new CheckBox(&g_Config.bEnable6DoF, vr->T("6DoF movement")));
-		vrGeneralSettings->Add(new CheckBox(&g_Config.bEnableStereo, vr->T("Stereoscopic vision (Experimental)")));
-		vrGeneralSettings->Add(new CheckBox(&g_Config.bEnableImmersiveVR, vr->T("Enable immersive mode")));
-		if (IsPassthroughSupported()) {
-			vrGeneralSettings->Add(new CheckBox(&g_Config.bPassthrough, vr->T("Enable passthrough")));
+	for (const PageDef &def : pageDefs) {
+		if (def.build == &BuildVRSettings && !showVR) {
+			continue;
 		}
-		vrGeneralSettings->Add(new CheckBox(&g_Config.bForce72Hz, vr->T("Force 72Hz update")));
-	}
-
-	ChoiceGroup *vrCameraSettings = vrSettings->Add(new ChoiceGroup(vr->T("VR camera")));
-	if (deviceType == DEVICE_TYPE_VR) {
-		vrCameraSettings->Add(new PopupSliderChoiceFloat(&g_Config.fCanvasDistance, 1.0f, 15.0f, 12.0f, vr->T("Distance to 2D menus and scenes"), 1.0f, screenManager(), ""));
-		vrCameraSettings->Add(new PopupSliderChoiceFloat(&g_Config.fCanvas3DDistance, 1.0f, 15.0f, 3.0f, vr->T("Distance to 3D scenes when VR disabled"), 1.0f, screenManager(), ""));
-	}
-	vrCameraSettings->Add(new PopupSliderChoiceFloat(&g_Config.fFieldOfViewPercentage, 100.0f, 200.0f, 100.0f, vr->T("Field of view scale"), 10.0f, screenManager(), vr->T("% of native FoV")));
-	vrCameraSettings->Add(new CheckBox(&g_Config.bRescaleHUD, vr->T("Heads-up display detection")));
-	PopupSliderChoiceFloat* vrHudScale = vrCameraSettings->Add(new PopupSliderChoiceFloat(&g_Config.fHeadUpDisplayScale, 0.0f, 1.5f, 0.3f, vr->T("Heads-up display scale"), 0.1f, screenManager(), ""));
-	vrHudScale->SetEnabledPtr(&g_Config.bRescaleHUD);
-	vrCameraSettings->Add(new CheckBox(&g_Config.bManualForceVR, vr->T("Manual switching between flat screen and VR using SCREEN key")));
-}
-
-void GameSettingsScreen::OnImmersiveModeChange(UI::EventParams &e) {
-	System_Notify(SystemNotification::IMMERSIVE_MODE_CHANGE);
-	if (g_Config.iAndroidHwScale != 0) {
-		System_RecreateActivity();
-	}
-}
-
-void GameSettingsScreen::OnSustainedPerformanceModeChange(UI::EventParams &e) {
-	System_Notify(SystemNotification::SUSTAINED_PERF_CHANGE);
-}
-
-void GameSettingsScreen::OnJitAffectingSetting(UI::EventParams &e) {
-	System_PostUIMessage(UIMessage::REQUEST_CLEAR_JIT);
-}
-
-void GameSettingsScreen::OnShowMemstickScreen(UI::EventParams &e) {
-	screenManager()->push(new MemStickScreen(false));
-}
-
-#if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
-
-void GameSettingsScreen::OnMemoryStickMyDoc(UI::EventParams &e) {
-	const Path &PPSSPPpath = File::GetExeDirectory();
-	const Path installedFile = PPSSPPpath / "installed.txt";
-	installed_ = File::Exists(installedFile);
-	if (otherinstalled_) {
-		File::Delete(PPSSPPpath / "installed.txt");
-		File::CreateEmptyFile(PPSSPPpath / "installed.txt");
-		otherinstalled_ = false;
-		const std::string myDocsPath = W32Util::UserDocumentsPath() + "/PPSSPP/";
-		g_Config.memStickDirectory = Path(myDocsPath);
-	} else if (installed_) {
-		File::Delete(PPSSPPpath / "installed.txt");
-		installed_ = false;
-		g_Config.memStickDirectory = PPSSPPpath / "memstick";
-	} else {
-		FILE *f = File::OpenCFile(PPSSPPpath / "installed.txt", "wb");
-		if (f) {
-			fclose(f);
+		std::function<void(SettingsPage *)> build = def.build;
+		if (!build) {
+			build = [this, buildWithState = def.buildWithState](SettingsPage *page) {
+				buildWithState(page, &systemState_);
+			};
 		}
-
-		const std::string myDocsPath = W32Util::UserDocumentsPath() + "/PPSSPP/";
-		g_Config.memStickDirectory = Path(myDocsPath);
-		installed_ = true;
+		AddSettingsTab(def.tag, T(I18NCat::MAINSETTINGS, def.title), def.icon ? ImageID(def.icon) : ImageID::invalid(), def.cat, build, def.helpTag);
 	}
-}
-
-void GameSettingsScreen::OnMemoryStickOther(UI::EventParams &e) {
-	const Path &PPSSPPpath = File::GetExeDirectory();
-	if (otherinstalled_) {
-		auto di = GetI18NCategory(I18NCat::DIALOG);
-		std::string initialPath = g_Config.memStickDirectory.ToCString();
-		std::string folder = W32Util::BrowseForFolder2(MainWindow::GetHWND(), di->T("Choose PPSSPP save folder"), initialPath);
-		if (folder.size()) {
-			g_Config.memStickDirectory = Path(folder);
-			FILE *f = File::OpenCFile(PPSSPPpath / "installed.txt", "wb");
-			if (f) {
-				std::string utfstring("\xEF\xBB\xBF");
-				utfstring.append(folder);
-				fwrite(utfstring.c_str(), 1, utfstring.length(), f);
-				fclose(f);
-			}
-			installed_ = false;
-		}
-		else
-			otherinstalled_ = false;
-	}
-	else {
-		File::Delete(PPSSPPpath / "installed.txt");
-		memstickMyDocEnabled_ = true;
-		otherinstalled_ = false;
-		installed_ = false;
-		g_Config.memStickDirectory = PPSSPPpath / "memstick";
-	}
-}
-
-#endif
-
-void GameSettingsScreen::OnChangeBackground(UI::EventParams &e) {
-	const Path bgPng = GetSysDirectory(DIRECTORY_SYSTEM) / "background.png";
-	const Path bgJpg = GetSysDirectory(DIRECTORY_SYSTEM) / "background.jpg";
-
-	if (File::Exists(bgPng) || File::Exists(bgJpg)) {
-		INFO_LOG(Log::UI, "Clearing background image.");
-		// The button is in clear mode.
-		File::Delete(bgPng);
-		File::Delete(bgJpg);
-		UIBackgroundShutdown();
-		RecreateViews();
-		return;
-	}
-
-	auto sy = GetI18NCategory(I18NCat::SYSTEM);
-	System_BrowseForImage(GetRequesterToken(), sy->T("Set UI background..."), bgJpg, [this](std::string_view value, int converted) {
-		if (converted == 1) {
-			// The platform code converted and saved the file to the desired path already.
-			INFO_LOG(Log::UI, "Platform converted the file: %.*s", STR_VIEW(value));
-		} else if (!value.empty()) {
-			Path path(value);
-
-			// Check the file format. Don't rely on the file extension here due to scoped storage URLs.
-			FILE *f = File::OpenCFile(path, "rb");
-			uint8_t buffer[8];
-			ImageFileType type = ImageFileType::UNKNOWN;
-			if (f != nullptr && 8 == fread(buffer, 1, ARRAY_SIZE(buffer), f)) {
-				type = DetectImageFileType(buffer, ARRAY_SIZE(buffer));
-			}
-			if (f) {
-				fclose(f);
-			}
-
-			std::string filename;
-			switch (type) {
-			case ImageFileType::JPEG:
-				filename = "background.jpg";
-				break;
-			case ImageFileType::PNG:
-				filename = "background.png";
-				break;
-			default:
-				break;
-			}
-
-			if (!filename.empty()) {
-				Path dest = GetSysDirectory(DIRECTORY_SYSTEM) / filename;
-				File::Copy(path, dest);
-				if (path.FilePathContainsNoCase("temp_import.jpg")) {
-					INFO_LOG(Log::UI, "Deleting temp file: %s", GetFriendlyPath(path).c_str());
-					File::Delete(path);
-				}
-			} else {
-				auto sy = GetI18NCategory(I18NCat::SYSTEM);
-				g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("Only JPG and PNG images are supported"), path.GetFilename(), 5.0);
-			}
-		}
-		// It will init again automatically.  We can't init outside a frame on Vulkan.
-		UIBackgroundShutdown();
-		RecreateViews();
-	});
-
-	// Change to a browse or clear button.
 }
 
 void GameSettingsScreen::dialogFinished(const Screen *dialog, DialogResult result) {
@@ -1844,47 +1646,18 @@ void GameSettingsScreen::dialogFinished(const Screen *dialog, DialogResult resul
 
 	if (result == DialogResult::DR_OK) {
 		if (equals(dialog->tag(), "RestoreSettingsScreen")) {
-			ReadConfigTemporaries();
+			ReadSystemPageState(&systemState_);
 		}
 		recreate = true;
 	}
 
-	// Show/hide the Analog Alternative Speed as appropriate - need to recreate views if this changed.
-	bool mapped = KeyMap::InputMappingsFromPspButton(VIRTKEY_SPEED_ANALOG, nullptr, true);
-	if (mapped != analogSpeedMapped_) {
-		analogSpeedMapped_ = mapped;
+	// The analog alternative speed is only shown when it's mapped.
+	if (equals(dialog->tag(), "ControlMapping")) {
 		recreate = true;
 	}
 
 	if (recreate) {
 		RecreateViews();
-	}
-}
-
-void GameSettingsScreen::CallbackMemstickFolder(bool yes) {
-	if (yes) {
-		Path memstickDirFile = g_Config.internalDataDirectory / "memstick_dir.txt";
-		std::string testWriteFile = pendingMemstickFolder_ + "/.write_verify_file";
-
-		// Already, create away.
-		if (!File::Exists(Path(pendingMemstickFolder_))) {
-			File::CreateFullPath(Path(pendingMemstickFolder_));
-		}
-		if (!File::WriteDataToFile(true, "1", 1, Path(testWriteFile))) {
-			auto sy = GetI18NCategory(I18NCat::SYSTEM);
-			g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("ChangingMemstickPathInvalid", "That path couldn't be used to save Memory Stick files."), testWriteFile, 5.0);
-			return;
-		}
-		File::Delete(Path(testWriteFile));
-
-		if (!File::WriteDataToFile(true, pendingMemstickFolder_.c_str(), pendingMemstickFolder_.size(), memstickDirFile)) {
-			WARN_LOG(Log::System, "Failed to write memstick folder to '%s'", memstickDirFile.c_str());
-		} else {
-			// Save so the settings, at least, are transferred.
-			g_Config.memStickDirectory = Path(pendingMemstickFolder_);
-			g_Config.Save("MemstickPathChanged");
-		}
-		screenManager()->RecreateAllViews();
 	}
 }
 
@@ -1907,7 +1680,7 @@ void TriggerRestart(const char *why, bool editThenRestore, const Path &gamePath)
 // From PauseScreen
 std::string GetConfirmExitMessage();
 
-void GameSettingsScreen::TriggerRestartOrDo(std::function<void()> callback) {
+void GameSettingsScreen::RestartOrDo(std::function<void()> callback) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
 	std::string confirmExitMessage = GetConfirmExitMessage();
@@ -1923,70 +1696,6 @@ void GameSettingsScreen::TriggerRestartOrDo(std::function<void()> callback) {
 			callback();
 		}
 	}));
-}
-
-void GameSettingsScreen::OnRenderingBackend(UI::EventParams &e) {
-	// It only makes sense to show the restart prompt if the backend was actually changed.
-	if (g_Config.iGPUBackend != (int)GetGPUBackend()) {
-		TriggerRestartOrDo([]() {
-			g_Config.iGPUBackend = (int)GetGPUBackend();
-		});
-	}
-}
-
-void GameSettingsScreen::OnRenderingDevice(UI::EventParams &e) {
-	// It only makes sense to show the restart prompt if the device was actually changed.
-	std::string *deviceNameSetting = GPUDeviceNameSetting();
-	if (deviceNameSetting && *deviceNameSetting != GetGPUBackendDevice()) {
-		auto di = GetI18NCategory(I18NCat::DIALOG);
-		TriggerRestartOrDo([this]() {
-			std::string *deviceNameSetting = GPUDeviceNameSetting();
-			if (deviceNameSetting)
-				*deviceNameSetting = GetGPUBackendDevice();
-			// Needed to redraw the setting.
-			RecreateViews();
-		});
-	}
-}
-
-void GameSettingsScreen::OnInflightFramesChoice(UI::EventParams &e) {
-	if (g_Config.iInflightFrames != prevInflightFrames_) {
-		auto di = GetI18NCategory(I18NCat::DIALOG);
-		TriggerRestartOrDo([this]() {
-			g_Config.iInflightFrames = prevInflightFrames_;
-		});
-	}
-}
-
-void GameSettingsScreen::OnAudioDevice(UI::EventParams &e) {
-	auto a = GetI18NCategory(I18NCat::AUDIO);
-	if (g_Config.sAudioDevice == a->T("Auto")) {
-		g_Config.sAudioDevice.clear();
-	}
-	System_Notify(SystemNotification::AUDIO_RESET_DEVICE);
-}
-
-void GameSettingsScreen::CallbackRestoreDefaults(bool yes) {
-	if (yes) {
-		g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS);
-		ReadConfigTemporaries();
-	}
-	System_Notify(SystemNotification::UI);
-}
-
-void GameSettingsScreen::OnRestoreDefaultSettings(UI::EventParams &e) {
-	auto sy = GetI18NCategory(I18NCat::SYSTEM);
-	if (g_Config.IsGameSpecific()) {
-		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
-		auto di = GetI18NCategory(I18NCat::DIALOG);
-		auto sy = GetI18NCategory(I18NCat::SYSTEM);
-		screenManager()->push(
-			new UI::MessagePopupScreen(sy->T("Restore Default Settings"), dev->T("RestoreGameDefaultSettings", "Are you sure you want to restore the game-specific settings back to the ppsspp defaults?\n"),
-				di->T("OK"), di->T("Cancel"), [this](bool yes) { CallbackRestoreDefaults(yes); }));
-	} else {
-		std::string_view title = sy->T("Restore Default Settings");
-		screenManager()->push(new RestoreSettingsScreen(title));
-	}
 }
 
 void GestureMappingScreen::CreateTabs() {
@@ -2014,22 +1723,26 @@ void GestureMappingScreen::CreateGestureTab(UI::LinearLayout *vert, int zoneInde
 		flags |= TopBarFlags::Portrait;
 	}
 	vert->Add(new TopBar(*screenManager()->getUIContext(), flags, ApplySafeSubstitutions("%1: %2", co->T("Gesture"), di->T(zoneIndex == 0 ? "Left side" : "Right side"))));
-	vert->Add(new CheckBox(&zone.bGestureControlEnabled, co->T("Enable gesture control")));
 
-	vert->Add(new ItemHeader(co->T("Swipe")));
-	vert->Add(new PopupMultiChoice(&zone.iSwipeUp, mc->T("Swipe Up"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&zone.iSwipeDown, mc->T("Swipe Down"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&zone.iSwipeLeft, mc->T("Swipe Left"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&zone.iSwipeRight, mc->T("Swipe Right"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
-	vert->Add(new PopupSliderChoiceFloat(&zone.fSwipeSensitivity, 0.01f, 2.0f, 1.0f, co->T("Swipe sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
-	vert->Add(new PopupSliderChoiceFloat(&zone.fSwipeSmoothing, 0.0f, 0.95f, 0.3f, co->T("Swipe smoothing"), 0.05f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	ChoiceGroupList *list = vert->Add(new ChoiceGroupList());
 
-	vert->Add(new ItemHeader(co->T("Double tap")));
-	vert->Add(new PopupMultiChoice(&zone.iDoubleTapGesture, mc->T("Double tap button"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()));
+	list->Add(new CheckBox(&zone.bGestureControlEnabled, co->T("Enable gesture control")))->SetRoundCorners();
 
-	vert->Add(new ItemHeader(co->T("Analog Stick")));
-	vert->Add(new CheckBox(&zone.bAnalogGesture, co->T("Enable analog stick gesture")));
-	vert->Add(new PopupSliderChoiceFloat(&zone.fAnalogGestureSensitivity, 0.01f, 5.0f, 1.0f, co->T("Sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bAnalogGesture);
+	ChoiceGroup *swipeGroup = list->Add(new ChoiceGroup(co->T("Swipe")));
+
+	swipeGroup->Add(new PopupMultiChoice(&zone.iSwipeUp, mc->T("Swipe Up"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	swipeGroup->Add(new PopupMultiChoice(&zone.iSwipeDown, mc->T("Swipe Down"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	swipeGroup->Add(new PopupMultiChoice(&zone.iSwipeLeft, mc->T("Swipe Left"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	swipeGroup->Add(new PopupMultiChoice(&zone.iSwipeRight, mc->T("Swipe Right"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	swipeGroup->Add(new PopupSliderChoiceFloat(&zone.fSwipeSensitivity, 0.01f, 2.0f, 1.0f, co->T("Swipe sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	swipeGroup->Add(new PopupSliderChoiceFloat(&zone.fSwipeSmoothing, 0.0f, 0.95f, 0.3f, co->T("Swipe smoothing"), 0.05f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
+
+	ChoiceGroup *doubleTapGroup = list->Add(new ChoiceGroup(co->T("Double tap")));
+	doubleTapGroup->Add(new PopupMultiChoice(&zone.iDoubleTapGesture, mc->T("Double tap button"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()));
+
+	ChoiceGroup *analogGroup = list->Add(new ChoiceGroup(co->T("Analog Stick")));
+	analogGroup->Add(new CheckBox(&zone.bAnalogGesture, co->T("Enable analog stick gesture")));
+	analogGroup->Add(new PopupSliderChoiceFloat(&zone.fAnalogGestureSensitivity, 0.01f, 5.0f, 1.0f, co->T("Sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bAnalogGesture);
 }
 
 RestoreSettingsScreen::RestoreSettingsScreen(std::string_view title)

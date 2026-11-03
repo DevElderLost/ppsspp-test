@@ -570,7 +570,7 @@ void SoftGPU::ConvertTextureDescFrom16(Draw::TextureDesc &desc, int srcwidth, in
 			break;
 
 		default:
-			ERROR_LOG_REPORT(Log::G3D, "Software: Unexpected framebuffer format: %d", displayFormat_);
+			ERROR_LOG(Log::G3D, "Software: Unexpected framebuffer format: %d", displayFormat_);
 			break;
 		}
 	}
@@ -961,7 +961,7 @@ void SoftGPU::Execute_Prim(u32 op, u32 diff) {
 	FlushImm();
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(Log::G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG(Log::G3D, "Software: Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -971,10 +971,14 @@ void SoftGPU::Execute_Prim(u32 op, u32 diff) {
 	const u32 vertType = gstate.vertType;
 	if ((vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(Log::G3D, "Software: Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG(Log::G3D, "Software: Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
+	} else if (!Memory::IsValidRange(gstate_c.vertexAddr, count * drawEngine_->FindVertexDecoder(vertType)->VertexSize())) {
+		// Nothing is mapped past the end of RAM or VRAM, so this would fault on the first read.
+		ERROR_LOG(Log::G3D, "Software: Bad vertex range %08x (%d verts)!", gstate_c.vertexAddr, count);
+		return;
 	}
 
 	if (gstate.isModeThrough()) {
@@ -1041,7 +1045,7 @@ void SoftGPU::Execute_Bezier(u32 op, u32 diff) {
 	}
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -1050,14 +1054,18 @@ void SoftGPU::Execute_Bezier(u32 op, u32 diff) {
 	const u32 vertType = gstate.vertType;
 	if ((vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
+	} else if (!Memory::IsValidRange(gstate_c.vertexAddr, (op & 0xFF) * ((op >> 8) & 0xFF) * drawEngine_->FindVertexDecoder(vertType)->VertexSize())) {
+		// Nothing is mapped past the end of RAM or VRAM, so this would fault on the first read.
+		ERROR_LOG(Log::G3D, "Bad control point range %08x!", gstate_c.vertexAddr);
+		return;
 	}
 
 	if ((vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(vertType)) {
-		DEBUG_LOG_REPORT(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", vertType, (vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(vertType));
+		DEBUG_LOG(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", vertType, (vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(vertType));
 	}
 
 	Spline::BezierSurface surface;
@@ -1094,7 +1102,7 @@ void SoftGPU::Execute_Spline(u32 op, u32 diff) {
 	}
 
 	if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
-		ERROR_LOG_REPORT(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
+		ERROR_LOG(Log::G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 		return;
 	}
 
@@ -1103,14 +1111,18 @@ void SoftGPU::Execute_Spline(u32 op, u32 diff) {
 	const u32 vertType = gstate.vertType;
 	if ((vertType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		if (!Memory::IsValidAddress(gstate_c.indexAddr)) {
-			ERROR_LOG_REPORT(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
+			ERROR_LOG(Log::G3D, "Bad index address %08x!", gstate_c.indexAddr);
 			return;
 		}
 		indices = Memory::GetPointerUnchecked(gstate_c.indexAddr);
+	} else if (!Memory::IsValidRange(gstate_c.vertexAddr, (op & 0xFF) * ((op >> 8) & 0xFF) * drawEngine_->FindVertexDecoder(vertType)->VertexSize())) {
+		// Nothing is mapped past the end of RAM or VRAM, so this would fault on the first read.
+		ERROR_LOG(Log::G3D, "Bad control point range %08x!", gstate_c.vertexAddr);
+		return;
 	}
 
 	if ((vertType & GE_VTYPE_MORPHCOUNT_MASK) || vertTypeIsSkinningEnabled(vertType)) {
-		DEBUG_LOG_REPORT(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", vertType, (vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(vertType));
+		DEBUG_LOG(Log::G3D, "Unusual bezier/spline vtype: %08x, morph: %d, bones: %d", vertType, (vertType & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT, vertTypeGetNumBoneWeights(vertType));
 	}
 
 	Spline::SplineSurface surface;
