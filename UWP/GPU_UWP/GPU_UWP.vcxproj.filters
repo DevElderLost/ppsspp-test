@@ -3,6 +3,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\GPU\Common\DepalettizeShaderCommon.cpp" />
     <ClCompile Include="..\..\GPU\Common\DrawEngineCommon.cpp" />
+    <ClCompile Include="..\..\GPU\Common\PlanarShadows.cpp" />
     <ClCompile Include="..\..\GPU\Common\FramebufferManagerCommon.cpp" />
     <ClCompile Include="..\..\GPU\Common\Overlay.cpp" />
     <ClCompile Include="..\..\GPU\Common\PresentationCommon.cpp" />
@@ -86,6 +87,7 @@
   <ItemGroup>
     <ClInclude Include="..\..\GPU\Common\DepalettizeShaderCommon.h" />
     <ClInclude Include="..\..\GPU\Common\DrawEngineCommon.h" />
+    <ClInclude Include="..\..\GPU\Common\PlanarShadows.h" />
     <ClInclude Include="..\..\GPU\Common\FramebufferManagerCommon.h" />
     <ClInclude Include="..\..\GPU\Common\Overlay.h" />
     <ClInclude Include="..\..\GPU\Common\PresentationCommon.h" />

@@ -21,6 +21,7 @@
 #include "ppsspp_config.h"
 
 #include "Common/BitSet.h"
+#include "Common/Common.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/GPU/thin3d.h"
 #include "Common/System/Display.h"
@@ -379,6 +380,60 @@ void BuildGraphicsSettings(SettingsPage *page) {
 	page->Setting(&g_Config.iTexFiltering).Disabled(&g_Config.bSoftwareRendering);
 
 	page->Setting(&g_Config.bSmart2DTexFiltering).Disabled(&g_Config.bSoftwareRendering);
+
+	// Fork additions: planar shadows, fullscreen fill and screen effects.
+	page->Header("Shadows");
+	page->Bool(&g_Config.bPlanarShadows, "Planar shadows").Disabled(&g_Config.bSoftwareRendering);
+	page->Hint({ I18NCat::GRAPHICS, "Planar shadows Tip", "Experimental: adds animated silhouette shadows under skinned characters and monsters, drawn on the GPU" });
+
+	static const char *shadowQualityLevels[] = { "Low (64)", "Medium (96)", "High (192)" };
+	page->Custom("Shadow quality", [host](UI::ViewGroup *parent) -> UI::View * {
+		return parent->Add(new PopupMultiChoice(&g_Config.iPlanarShadowQuality, T(I18NCat::GRAPHICS, "Shadow quality"), shadowQualityLevels, 0, ARRAY_SIZE(shadowQualityLevels), I18NCat::GRAPHICS, host->PageScreenManager()));
+	}).Enabled(&g_Config.bPlanarShadows);
+
+	static const char *shadowDistances[] = { "No limit", "Short", "Medium", "Long" };
+	page->Custom("Shadow distance", [host](UI::ViewGroup *parent) -> UI::View * {
+		return parent->Add(new PopupMultiChoice(&g_Config.iPlanarShadowDistance, T(I18NCat::GRAPHICS, "Shadow distance"), shadowDistances, 0, ARRAY_SIZE(shadowDistances), I18NCat::GRAPHICS, host->PageScreenManager()));
+	}).Enabled(&g_Config.bPlanarShadows);
+
+	// Integer slider with a default and a step. A percent unit also gets the "%d%%" format.
+	auto addSlider = [page](int *value, int minValue, int maxValue, int defaultValue, const char *text, int step, bool percent) -> SettingItem & {
+		SettingItem &item = page->IntSlider(value, minValue, maxValue, text).Default(defaultValue).Step(step);
+		if (percent) {
+			item.units = "%";
+			item.Format("%d%%");
+		}
+		return item;
+	};
+
+	addSlider(&g_Config.iPlanarShadowOpacity, 0, 60, 25, "Shadow opacity", 5, true).Enabled(&g_Config.bPlanarShadows);
+	addSlider(&g_Config.iPlanarShadowDirX, -200, 200, 45, "Shadow direction X", 5, false).Enabled(&g_Config.bPlanarShadows);
+	addSlider(&g_Config.iPlanarShadowDirZ, -200, 200, 30, "Shadow direction Z", 5, false).Enabled(&g_Config.bPlanarShadows);
+	page->Bool(&g_Config.bPlanarShadowHideOriginal, "Hide original blob shadows").Enabled(&g_Config.bPlanarShadows);
+
+	page->Bool(&g_Config.bFillScreen, "Fill screen without stretching").EnabledFunc([]() {
+		return !g_Config.bSoftwareRendering;
+	});
+	page->Hint({ I18NCat::GRAPHICS, "Fill screen Tip", "Monster Hunter Portable 3rd HD only: the game's view is widened to the shape of your display (21:9, say) instead of being stretched, and the HUD keeps its proportions. Movies keep their own shape." });
+
+	page->Header("Screen effects");
+	// Ported from the tiny_computer compositor. They run after the post-processing shaders, at the display resolution.
+	page->Bool(&g_Config.bScreenFxFXAA, "FXAA anti-aliasing");
+	page->Bool(&g_Config.bScreenFxHDR, "HDR effect");
+	page->Hint({ I18NCat::GRAPHICS, "HDR effect Tip", "Bloom and tone boost that gives the image an HDR look (not real HDR output)" });
+	page->Bool(&g_Config.bScreenFxCAS, "CAS sharpening");
+	addSlider(&g_Config.iScreenFxCASLevel, 0, 100, 50, "CAS sharpness", 5, true).Enabled(&g_Config.bScreenFxCAS);
+	page->Bool(&g_Config.bScreenFxDeband, "Deband (dither)");
+	page->Hint({ I18NCat::GRAPHICS, "Deband Tip", "Adds a little noise to hide colour banding in gradients" });
+	addSlider(&g_Config.iScreenFxDebandLevel, 0, 200, 100, "Deband strength", 10, true).Enabled(&g_Config.bScreenFxDeband);
+	addSlider(&g_Config.iScreenFxBrightness, -100, 100, 0, "Brightness", 5, false);
+	addSlider(&g_Config.iScreenFxContrast, 0, 100, 0, "Contrast", 5, false);
+	addSlider(&g_Config.iScreenFxGamma, 50, 300, 100, "Gamma", 5, true);
+	addSlider(&g_Config.iScreenFxSaturation, 0, 200, 100, "Saturation", 5, true);
+	page->Choice("Reset screen effects").OnClick([host](UI::EventParams &) {
+		ResetScreenFxSettings();
+		host->RecreatePageViews();
+	});
 
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;

@@ -1,13 +1,8 @@
 name: Generate Source Tarball
 
-# Trigger whenever a release is created
+# Only an APK and a Linux aarch64 AppImage are published by this fork, so this only runs by hand.
 on:
-  release:
-    types:
-      - created
-  push:
-    tags:
-      - "v*.*"
+  workflow_dispatch:
 
 jobs:
   build:

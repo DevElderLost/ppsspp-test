@@ -25,8 +25,12 @@
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/StringUtils.h"
+#include "Core/ELF/ParamSFO.h"
 #include "Core/FileSystems/ISOFileSystem.h"
 #include "Core/HLE/sceKernel.h"
+#include "Core/ModImport.h"
+#include "Core/Mods/ModEngine.h"
+#include "Core/System.h"
 #include "Core/MemMap.h"
 #include "Core/Reporting.h"
 
@@ -221,7 +225,92 @@ ISOFileSystem::ISOFileSystem(IHandleAllocator *_hAlloc, std::shared_ptr<BlockDev
 }
 
 ISOFileSystem::~ISOFileSystem() {
+	if (modsAttached_)
+		Mods::Manager::Instance().DetachDisc(this);
 	delete treeroot;
+}
+
+// ---- Mods (Core/Mods) ------------------------------------------------------------------------
+// For Monster Hunter Portable 3rd HD only. When no mod is on, none of this changes a read.
+
+// Reads bytes straight off the disc, the way the mods' view of DATA.BIN gets the game's own bytes.
+size_t ISOFileSystem::ReadDiscBytes(u64 position, u8 *out, size_t size) {
+	size_t done = 0;
+	u8 sector[2048];
+	while (done < size) {
+		const u32 secNum = (u32)((position + done) / 2048);
+		const size_t inSector = (size_t)((position + done) & 2047);
+		if (inSector == 0 && size - done >= 2048) {
+			const size_t sectors = (size - done) / 2048;
+			blockDevice->ReadBlocks(secNum, (int)sectors, out + done);
+			done += sectors * 2048;
+			continue;
+		}
+		const size_t count = std::min<size_t>(size - done, 2048 - inSector);
+		if (!blockDevice->ReadBlock(secNum, sector))
+			memset(sector, 0, sizeof(sector));
+		memcpy(out + done, sector + inSector, count);
+		done += count;
+	}
+	return done;
+}
+
+// Done on the first open of DATA.BIN (or of a raw sector, which is how the game loads its code
+// from it), when the game is running and its id is known.
+void ISOFileSystem::SetUpMods() {
+	if (modsChecked_)
+		return;
+	modsChecked_ = true;
+	if (!Mods::IsSupportedGameId(g_paramSFO.GetDiscID()))
+		return;
+	const TreeEntry *data = GetFromPath("/PSP_GAME/USRDIR/DATA.BIN", false);
+	if (!data || data == &entireISO || data->isDirectory || data->size <= 0)
+		return;
+	const u64 start = data->startingPosition;
+	const u64 size = (u64)data->size;
+	const auto raw = [this, start, size](u64 offset, Mods::Span<u8> out) -> size_t {
+		if (offset >= size)
+			return 0;
+		const size_t count = (size_t)std::min<u64>(out.size(), size - offset);
+		return ReadDiscBytes(start + offset, out.data(), count);
+	};
+	if (Mods::Manager::Instance().AttachDisc(this, raw, size, ModImport::GetModsFolder())) {
+		dataBin_ = data;
+		modsAttached_ = true;
+	}
+}
+
+// Whether reads of this open file are reads of DATA.BIN as the mods have it, and where in that
+// archive the next one starts.
+bool ISOFileSystem::ModArchivePos(const OpenFileEntry &e, u64 *archivePos, s64 *fileSize) const {
+	if (!modsAttached_ || !dataBin_)
+		return false;
+	Mods::Manager &mods = Mods::Manager::Instance();
+	if (!mods.Serving())
+		return false;
+	const u64 dataStart = dataBin_->startingPosition;
+	const u64 archiveBytes = mods.DataBinSize();
+	if (e.isRawSector) {
+		const u64 start = e.sectorStart * 2048ULL;
+		if (start < dataStart || start >= dataStart + archiveBytes)
+			return false;
+		*archivePos = start - dataStart + e.seekPos;
+		*fileSize = (s64)e.openSize;
+		return true;
+	}
+	if (e.file == dataBin_) {
+		*archivePos = e.seekPos;
+		*fileSize = (s64)archiveBytes;
+		return true;
+	}
+	return false;
+}
+
+// A file's size: DATA.BIN's changes when a mod's file made it grow.
+s64 ISOFileSystem::EntrySize(const TreeEntry *e) const {
+	if (modsAttached_ && e == dataBin_ && Mods::Manager::Instance().Serving())
+		return (s64)Mods::Manager::Instance().DataBinSize();
+	return e->size;
 }
 
 std::string ISOFileSystem::TreeEntry::BuildPath() {
@@ -404,6 +493,9 @@ const ISOFileSystem::TreeEntry *ISOFileSystem::GetFromPath(std::string_view path
 }
 
 int ISOFileSystem::OpenFile(std::string filename, FileAccess access, const char *devicename) {
+	if (!modsChecked_ && (filename.compare(0, 8, "/sce_lbn") == 0 || endsWithNoCase(filename, "DATA.BIN"))) {
+		SetUpMods();
+	}
 	OpenFileEntry entry;
 	entry.isRawSector = false;
 	entry.isBlockSectorMode = false;
@@ -575,6 +667,23 @@ size_t ISOFileSystem::ReadFile(u32 handle, u8 *pointer, s64 size, int &usec) {
 		}
 		
 		if (e.isBlockSectorMode) {
+			if (modsAttached_ && dataBin_ && Mods::Manager::Instance().Serving()) {
+				// A read of whole sectors of DATA.BIN: from the archive the mods made.
+				Mods::Manager &mods = Mods::Manager::Instance();
+				const u64 startLba = dataBin_->startingPosition / 2048;
+				const u64 sectors = (mods.DataBinSize() + 2047) / 2048;
+				if (e.seekPos >= startLba && (u64)e.seekPos + (u64)size <= startLba + sectors) {
+					const size_t wanted = (size_t)size * 2048;
+					const size_t got = mods.Read((u64)(e.seekPos - startLba) * 2048, pointer, wanted);
+					if (got < wanted)
+						memset(pointer + got, 0, wanted - got);
+					if (abs((int)lastReadBlock_ - (int)e.seekPos) > 100)
+						usec = 100000;
+					e.seekPos += (int)size;
+					lastReadBlock_ = e.seekPos;
+					return (int)size;
+				}
+			}
 			// Whole sectors! Shortcut to this simple code.
 			blockDevice->ReadBlocks(e.seekPos, (int)size, pointer);
 			if (abs((int)lastReadBlock_ - (int)e.seekPos) > 100) {
@@ -588,15 +697,19 @@ size_t ISOFileSystem::ReadFile(u32 handle, u8 *pointer, s64 size, int &usec) {
 
 		u64 positionOnIso;
 		s64 fileSize;
+		u64 modPos = 0;
+		bool modded = false;
 		if (e.isRawSector) {
 			positionOnIso = e.sectorStart * 2048ULL + e.seekPos;
 			fileSize = (s64)e.openSize;
+			modded = ModArchivePos(e, &modPos, &fileSize);
 		} else if (e.file == nullptr) {
 			ERROR_LOG(Log::FileSystem, "File no longer exists (loaded savestate with different ISO?)");
 			return 0;
 		} else {
 			positionOnIso = e.file->startingPosition + e.seekPos;
 			fileSize = e.file->size;
+			modded = ModArchivePos(e, &modPos, &fileSize);
 		}
 
 		if ((s64)e.seekPos > fileSize) {
@@ -614,6 +727,17 @@ size_t ISOFileSystem::ReadFile(u32 handle, u8 *pointer, s64 size, int &usec) {
 				DEBUG_LOG(Log::FileSystem, "Reading beyond end of file from seekPos %d, clamping size %lld to %lld", e.seekPos, size, newSize);
 			}
 			size = newSize;
+		}
+
+		if (modded) {
+			// DATA.BIN as the mods have it. The timing still follows where the game's own data is.
+			const size_t got = Mods::Manager::Instance().Read(modPos, pointer, (size_t)size);
+			const u32 secNum = (u32)((positionOnIso + got) / 2048);
+			if (abs((int)lastReadBlock_ - (int)secNum) > 100)
+				usec = 100000;
+			lastReadBlock_ = secNum;
+			e.seekPos += (unsigned int)got;
+			return got;
 		}
 
 		// Okay, we have size and position, let's rock.
@@ -695,7 +819,7 @@ size_t ISOFileSystem::SeekFile(u32 handle, s32 position, FileMove type) {
 			if (e.isRawSector)
 				e.seekPos = e.openSize + position;
 			else
-				e.seekPos = (unsigned int)(e.file->size + position);
+				e.seekPos = (unsigned int)(EntrySize(e.file) + position);
 			break;
 		}
 		return (size_t)e.seekPos;
@@ -729,7 +853,7 @@ PSPFileInfo ISOFileSystem::GetFileInfo(std::string filename) {
 		x.name = entry->name;
 		// Strangely, it seems to be executable even for files.
 		x.access = 0555;
-		x.size = entry->size;
+		x.size = EntrySize(entry);
 		x.exists = true;
 		x.type = entry->isDirectory ? FILETYPE_DIRECTORY : FILETYPE_NORMAL;
 		x.isOnSectorSystem = true;
@@ -747,7 +871,7 @@ PSPFileInfo ISOFileSystem::GetFileInfoByHandle(u32 handle) {
 		x.name = entry->name;
 		// Strangely, it seems to be executable even for files.
 		x.access = 0555;
-		x.size = entry->size;
+		x.size = EntrySize(entry);
 		x.exists = true;
 		x.type = entry->isDirectory ? FILETYPE_DIRECTORY : FILETYPE_NORMAL;
 		x.isOnSectorSystem = true;
@@ -784,13 +908,13 @@ std::vector<PSPFileInfo> ISOFileSystem::GetDirListing(std::string_view path, boo
 		// Strangely, it seems to be executable even for files.
 		x.access = 0555;
 		x.exists = true;
-		x.size = e->size;
+		x.size = EntrySize(e);
 		x.type = e->isDirectory ? FILETYPE_DIRECTORY : FILETYPE_NORMAL;
 		x.isOnSectorSystem = true;
 		x.startSector = e->startingPosition/2048;
 		FillFileTimes(&x, e->recordTime);
 		x.sectorSize = sectorSize;
-		x.numSectors = (u32)((e->size + sectorSize - 1) / sectorSize);
+		x.numSectors = (u32)((x.size + sectorSize - 1) / sectorSize);
 		myVector.push_back(x);
 	}
 	if (exists)

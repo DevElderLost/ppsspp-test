@@ -124,6 +124,8 @@ list(APPEND UISource
 	CwCheatScreen.cpp
 	FirmwareScreen.h
 	FirmwareScreen.cpp
+	ModsScreen.h
+	ModsScreen.cpp
 	InstallUpdateScreen.h
 	InstallUpdateScreen.cpp
 	InstallZipScreen.h

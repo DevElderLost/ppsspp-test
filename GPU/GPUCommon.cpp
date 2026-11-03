@@ -31,6 +31,7 @@
 #include "Core/Util/PPGeDraw.h"
 #include "Core/MemMapHelpers.h"
 #include "GPU/Common/DrawEngineCommon.h"
+#include "GPU/Common/FillScreen.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/SoftwareTransformCommon.h"
@@ -97,6 +98,8 @@ void GPUCommon::EndHostFrame() {
 }
 
 void GPUCommon::Reinitialize() {
+	// A new executable starts: whatever Fill screen learned about the old one is gone.
+	FillScreen::Reset();
 	memset(dls, 0, sizeof(dls));
 	for (int i = 0; i < DisplayListMaxCount; ++i) {
 		dls[i].state = PSP_GE_DL_STATE_NONE;

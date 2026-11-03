@@ -1,26 +1,10 @@
 name: Build
 
+# This fork only publishes an Android APK (manual_generate_apk.yml) and a Linux aarch64 AppImage
+# (appimage.yml). The all-platform build (Windows, macOS, iOS, tvOS, x86 Linux, ...) is kept for
+# reference but only runs when started by hand.
 on:
-  push:
-    branches:
-    - master
-    # For testing.
-    - actions
-    tags:
-      - "v*.*"
-    paths-ignore:
-    - '*.{txt,md}'
-    - 'Tools/**'
-    - '.{editorconfig,gitattributes,gitignore}'
-    - 'appveyor.yml'
-  pull_request:
-    branches:
-    - master
-    paths-ignore:
-    - '*.{txt,md}'
-    - 'Tools/**'
-    - '.{editorconfig,gitattributes,gitignore}'
-    - 'appveyor.yml'
+  workflow_dispatch:
 
 env:
   BUILD_CONFIGURATION: Release
